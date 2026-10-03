@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safe2Ride — is it safe to ride right now?</title>
+<meta name="description" content="One tap to check whether the weather where you are makes it safe to ride your bike or motorbike.">
+<style>
+  :root {
+    --bg: #f6f7f4; --card: #ffffff; --ink: #1c2321; --muted: #5d6965; --line: #dfe3df;
+    --go: #1f8a4c; --go-bg: #e3f4ea; --care: #b26a00; --care-bg: #fdf0db; --stop: #c0362c; --stop-bg: #fbe4e1;
+    --accent: #1c2321;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121615; --card: #1b201f; --ink: #e8ecea; --muted: #9aa5a1; --line: #2c3331;
+      --go: #4cc47f; --go-bg: #173323; --care: #f0a840; --care-bg: #3a2b12; --stop: #f2786d; --stop-bg: #3d1c19;
+      --accent: #e8ecea;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .tag { color: var(--muted); margin: 0 0 24px; }
+  .modes { display: flex; gap: 8px; margin-bottom: 16px; }
+  .modes label { flex: 1; }
+  .modes input { position: absolute; opacity: 0; }
+  .modes span { display: block; text-align: center; padding: 10px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--card); cursor: pointer; font-weight: 600; }
+  .modes input:checked + span { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .modes input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button#check { width: 100%; padding: 18px; font-size: 1.15rem; font-weight: 700; border: 0;
+    border-radius: 12px; background: var(--accent); color: var(--bg); cursor: pointer; }
+  button#check:disabled { opacity: 0.6; cursor: wait; }
+  #status { color: var(--muted); min-height: 1.5em; margin: 12px 0; }
+  .verdict { border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+  .verdict h2 { margin: 0 0 4px; font-size: 1.6rem; }
+  .verdict p { margin: 0; }
+  .go { background: var(--go-bg); color: var(--go); }
+  .care { background: var(--care-bg); color: var(--care); }
+  .stop { background: var(--stop-bg); color: var(--stop); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 20px; margin-bottom: 16px; }
+  .card h3 { margin: 0 0 8px; font-size: 1rem; }
+  ul.reasons { margin: 0; padding-left: 20px; }
+  ul.reasons li { margin: 4px 0; }
+  .now { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+  .now div small { display: block; color: var(--muted); font-size: 0.8rem; }
+  .now div strong { font-size: 1.15rem; }
+  .timeline { overflow-x: auto; }
+  .timeline table { border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; }
+  .timeline th, .timeline td { padding: 4px 8px; text-align: center; border-bottom: 1px solid var(--line); }
+  .timeline th { color: var(--muted); font-weight: 500; text-align: left; }
+  .timeline td.cur { font-weight: 700; background: var(--bg); }
+  footer { color: var(--muted); font-size: 0.8rem; margin-top: 32px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Safe2Ride</h1>
+  <p class="tag">One tap to check whether the weather where you are makes it safe to ride.</p>
+
+  <div class="modes" role="radiogroup" aria-label="What are you riding?">
+    <label><input type="radio" name="mode" value="bicycle" checked><span>🚲 Bicycle</span></label>
+    <label><input type="radio" name="mode" value="motorbike"><span>🏍️ Motorbike</span></label>
+  </div>
+
+  <button id="check">Check my location</button>
+  <p id="status" role="status"></p>
+
+  <section id="result" hidden></section>
+
+  <footer>
+    <p>Safe2Ride is guidance only. It can't see the road in front of you: always use your own judgement.
+    Weather data by <a href="https://open-meteo.com/">Open-Meteo</a>.</p>
+  </footer>
+</main>
+
+<script>
+const PAST_HOURS = 6, FORECAST_HOURS = 12;
+
+// Thresholds differ by vehicle. Wind values are mph.
+const LIMITS = {
+  bicycle:   { gustCare: 25, gustStop: 38, windCare: 18, rainCare: 1.0, rainStop: 6 },
+  motorbike: { gustCare: 35, gustStop: 50, windCare: 28, rainCare: 2.0, rainStop: 8 },
+};
+
+const WMO = {
+  0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Freezing fog",
+  51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle", 56: "Freezing drizzle", 57: "Freezing drizzle",
+  61: "Light rain", 63: "Rain", 65: "Heavy rain", 66: "Freezing rain", 67: "Freezing rain",
+  71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains", 80: "Showers", 81: "Showers",
+  82: "Violent showers", 85: "Snow showers", 86: "Snow showers", 95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with hail",
+};
+
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status"), resultEl = $("result"), btn = $("check");
+
+btn.addEventListener("click", () => {
+  if (!navigator.geolocation) return setStatus("Your browser can't share its location.");
+  btn.disabled = true;
+  setStatus("Finding your location…");
+  navigator.geolocation.getCurrentPosition(
+    (pos) => run(pos.coords.latitude, pos.coords.longitude),
+    (err) => { btn.disabled = false; setStatus(err.code === 1
+      ? "Location permission was denied. Allow location access for this site and try again."
+      : "Couldn't get your location. Try again."); },
+    { enableHighAccuracy: false, timeout: 15000, maximumAge: 300000 }
+  );
+});
+
+document.querySelectorAll('input[name="mode"]').forEach((r) =>
+  r.addEventListener("change", () => { if (lastData) render(lastData, lastPlace); }));
+
+let lastData = null, lastPlace = "";
+
+async function run(lat, lon) {
+  setStatus("Checking the weather…");
+  try {
+    const [data, place] = await Promise.all([fetchWeather(lat, lon), fetchPlace(lat, lon)]);
+    lastData = data; lastPlace = place;
+    render(data, place);
+    setStatus("");
+  } catch (e) {
+    setStatus("Couldn't fetch the weather right now. Please try again in a moment.");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function fetchWeather(lat, lon) {
+  const vars = "temperature_2m,dew_point_2m,precipitation,snowfall,weather_code,visibility,wind_speed_10m,wind_gusts_10m,soil_temperature_0cm,is_day";
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}`
+    + `&hourly=${vars}&past_hours=${PAST_HOURS}&forecast_hours=${FORECAST_HOURS}&wind_speed_unit=mph&timezone=auto`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("weather " + res.status);
+  return res.json();
+}
+
+async function fetchPlace(lat, lon) {
+  try {
+    const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
+    const j = await res.json();
+    return j.locality || j.city || j.principalSubdivision || "";
+  } catch { return ""; }
+}
+
+// Turn hourly data into a verdict. Index PAST_HOURS is the current hour.
+function assess(h, mode) {
+  const L = LIMITS[mode];
+  const n = h.time.length, now = Math.min(PAST_HOURS, n - 1);
+  const past = range(0, now), next3 = range(now, Math.min(now + 3, n));
+  const max = (arr, idx) => Math.max(...idx.map((i) => arr[i] ?? 0));
+  const sum = (arr, idx) => idx.reduce((s, i) => s + (arr[i] ?? 0), 0);
+  const min = (arr, idx) => Math.min(...idx.map((i) => arr[i] ?? 99));
+
+  const reasons = []; // { level: 2 stop | 1 care | 0 info, text }
+  const add = (level, text) => reasons.push({ level, text });
+
+  const codesAhead = next3.map((i) => h.weather_code[i]);
+  const pastRain = sum(h.precipitation, past);
+  const recentRain = sum(h.precipitation, past.slice(-3));
+  const surfaceNow = h.soil_temperature_0cm[now], airNow = h.temperature_2m[now];
+  const coldest = Math.min(min(h.soil_temperature_0cm, next3), min(h.temperature_2m, next3));
+
+  // Thunder and snow
+  if (codesAhead.some((c) => c >= 95)) add(2, "Thunderstorms expected in the next few hours.");
+  const snowAhead = sum(h.snowfall, next3), snowPast = sum(h.snowfall, past);
+  if (snowAhead > 0) add(2, `Snow forecast in the next 3 hours (${snowAhead.toFixed(1)} cm).`);
+  else if (snowPast > 0) add(2, `Snow has fallen in the last ${PAST_HOURS} hours, so roads may be covered.`);
+
+  // Ice: freezing surface plus moisture is the big one
+  if (codesAhead.some((c) => [56, 57, 66, 67].includes(c))) add(2, "Freezing rain or drizzle forecast: black ice is likely.");
+  if (coldest <= 0 && (pastRain > 0 || h.dew_point_2m[now] >= airNow - 1)) {
+    add(2, `Road surface around ${coldest.toFixed(0)}°C with moisture about: high risk of ice.`);
+  } else if (coldest <= 3) {
+    add(1, `Near freezing (${coldest.toFixed(0)}°C). Watch for frost and ice on shaded roads and bridges.`);
+  }
+
+  // Wind
+  const gust = max(h.wind_gusts_10m, next3), wind = max(h.wind_speed_10m, next3);
+  if (gust >= L.gustStop) add(2, `Gusts up to ${Math.round(gust)} mph: strong enough to push you across the road.`);
+  else if (gust >= L.gustCare || wind >= L.windCare) add(1, `Windy, with gusts up to ${Math.round(gust)} mph. Take care in exposed spots.`);
+
+  // Rain now / ahead
+  const rainAhead = max(h.precipitation, next3);
+  if (rainAhead >= L.rainStop) add(2, `Heavy rain forecast (up to ${rainAhead.toFixed(1)} mm/h): poor grip and visibility.`);
+  else if (rainAhead >= L.rainCare) add(1, `Rain forecast (up to ${rainAhead.toFixed(1)} mm/h). Allow longer braking distances.`);
+  else if (rainAhead > 0) add(0, "Some light rain possible.");
+
+  // Roads still wet from earlier rain
+  if (recentRain >= 0.5 && rainAhead < L.rainCare) add(1, `${recentRain.toFixed(1)} mm of rain in the last 3 hours: roads are likely still wet and slippery.`);
+  else if (pastRain > 0 && recentRain < 0.5) add(0, `Some rain earlier (${pastRain.toFixed(1)} mm in the last ${PAST_HOURS} hours); roads may be damp in places.`);
+
+  // Visibility
+  const vis = min(h.visibility, next3);
+  if (vis < 200) add(2, `Visibility down to ${Math.round(vis)} m (fog).`);
+  else if (vis < 1000) add(1, `Reduced visibility (${(vis / 1000).toFixed(1)} km). Use lights and be seen.`);
+
+  // Heat
+  if (max(h.temperature_2m, next3) >= 30) add(1, "Very hot. Carry water and watch for soft, melting tarmac.");
+
+  // Darkness
+  if (h.is_day[now] === 0) add(0, "It's dark: use lights and reflective kit.");
+
+  const worst = Math.max(0, ...reasons.map((r) => r.level));
+  reasons.sort((a, b) => b.level - a.level);
+  return { level: worst, reasons, now };
+}
+
+function render(data, place) {
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  const h = data.hourly;
+  const { level, reasons, now } = assess(h, mode);
+  const who = mode === "bicycle" ? "cycle" : "ride your motorbike";
+  const verdict = [
+    { cls: "go", title: "Good to go", text: `Conditions look fine to ${who}.` },
+    { cls: "care", title: "Ride with care", text: `You can ${who}, but conditions need extra care.` },
+    { cls: "stop", title: "Not advised", text: `We'd advise against choosing to ${who} right now.` },
+  ][level];
+
+  const hhmm = (t) => t.slice(11, 16);
+  const cells = (fn) => h.time.map((_, i) => `<td class="${i === now ? "cur" : ""}">${fn(i)}</td>`).join("");
+
+  resultEl.innerHTML = `
+    <div class="verdict ${verdict.cls}">
+      <h2>${verdict.title}</h2>
+      <p>${verdict.text}${place ? ` <span style="opacity:.8">(${esc(place)})</span>` : ""}</p>
+    </div>
+    <div class="card">
+      <h3>Why</h3>
+      ${reasons.length
+        ? `<ul class="reasons">${reasons.map((r) => `<li>${["", "⚠️ ", "⛔ "][r.level]}${esc(r.text)}</li>`).join("")}</ul>`
+        : "<p>No weather hazards found for the next 3 hours.</p>"}
+    </div>
+    <div class="card">
+      <h3>Right now</h3>
+      <div class="now">
+        <div><small>Conditions</small><strong>${WMO[h.weather_code[now]] ?? "—"}</strong></div>
+        <div><small>Air / road surface</small><strong>${Math.round(h.temperature_2m[now])}° / ${Math.round(h.soil_temperature_0cm[now])}°C</strong></div>
+        <div><small>Wind (gusts)</small><strong>${Math.round(h.wind_speed_10m[now])} (${Math.round(h.wind_gusts_10m[now])}) mph</strong></div>
+        <div><small>Rain this hour</small><strong>${h.precipitation[now].toFixed(1)} mm</strong></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Last ${PAST_HOURS} hours and next ${FORECAST_HOURS - 1}</h3>
+      <div class="timeline"><table>
+        <tr><th>Time</th>${cells((i) => hhmm(h.time[i]))}</tr>
+        <tr><th>°C</th>${cells((i) => Math.round(h.temperature_2m[i]))}</tr>
+        <tr><th>Rain mm</th>${cells((i) => h.precipitation[i] ? h.precipitation[i].toFixed(1) : "·")}</tr>
+        <tr><th>Gust mph</th>${cells((i) => Math.round(h.wind_gusts_10m[i]))}</tr>
+      </table></div>
+    </div>`;
+  resultEl.hidden = false;
+}
+
+function range(a, b) { return Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i); }
+function setStatus(t) { statusEl.textContent = t; }
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+</script>
+</body>
+</html>
