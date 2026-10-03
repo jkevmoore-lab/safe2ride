@@ -17,7 +17,7 @@ const WMO = {
 };
 
 async function fetchWeather(lat, lon) {
-  const vars = "temperature_2m,apparent_temperature,dew_point_2m,precipitation,snowfall,weather_code,visibility,wind_speed_10m,wind_gusts_10m,soil_temperature_0cm,is_day";
+  const vars = "temperature_2m,apparent_temperature,dew_point_2m,precipitation,precipitation_probability,snowfall,weather_code,visibility,wind_speed_10m,wind_gusts_10m,soil_temperature_0cm,is_day";
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}`
     + `&hourly=${vars}&past_hours=${PAST_HOURS}&forecast_hours=${FORECAST_HOURS}&wind_speed_unit=mph&timezone=auto`;
   const res = await fetch(url);
@@ -76,6 +76,9 @@ function assess(h, mode, at, ahead = 3) {
   if (recentRain >= 0.5 && rainAhead < L.rainCare) add(1, "wet", `${recentRain.toFixed(1)} mm of rain in the last 3 hours: roads are likely still wet and slippery.`);
   else if (pastRain > 0 && recentRain < 0.5) add(0, "wet", `Some rain earlier (${pastRain.toFixed(1)} mm in the last ${PAST_HOURS} hours); roads may be damp in places.`);
 
+  const soak = scores(h, mode, at, ahead).rain;
+  if (soak.score >= 7 && rainAhead < L.rainCare) add(1, "rain", `Showers could add up: ${soak.detail}. You may get soaked.`);
+
   const vis = min(h.visibility, next);
   if (vis < 200) add(2, "fog", `Visibility down to ${Math.round(vis)} m (fog).`);
   else if (vis < 1000) add(1, "fog", `Reduced visibility (${(vis / 1000).toFixed(1)} km). Use lights and be seen.`);
@@ -98,5 +101,49 @@ function bestWindow(levels, from) {
   }
   return best;
 }
+
+// Risk scores 0–10 for the ride window (`ahead` hours from `at`).
+function scores(h, mode, at, ahead = 3) {
+  const L = LIMITS[mode];
+  const n = h.time.length;
+  const past = range(Math.max(0, at - PAST_HOURS), at), next = range(at, Math.min(at + ahead, n));
+  const sum = (arr, idx) => idx.reduce((s, i) => s + (arr[i] ?? 0), 0);
+  const clamp = (x) => Math.max(0, Math.min(10, Math.round(x)));
+
+  // Ice: how cold the surface gets x how much moisture is about.
+  const surface = Math.min(...next.map((i) => Math.min(h.soil_temperature_0cm[i], h.temperature_2m[i])));
+  const cold = Math.max(0, Math.min(1, (3.5 - surface) / 4.5)); // 3.5°C -> 0, -1°C -> 1
+  const codes = next.map((i) => h.weather_code[i]);
+  const pastRain = sum(h.precipitation, past), snow = sum(h.snowfall, past) + sum(h.snowfall, next);
+  const frost = next.some((i) => h.dew_point_2m[i] >= h.temperature_2m[i] - 1);
+  let wet = 0.3, why = "dry roads";
+  if (codes.some((c) => [56, 57, 66, 67].includes(c))) { wet = 1; why = "freezing rain"; }
+  else if (snow > 0) { wet = 1; why = "snow about"; }
+  else if (pastRain >= 0.5 || sum(h.precipitation, next) >= 0.5) { wet = 0.9; why = "wet roads"; }
+  else if (pastRain > 0) { wet = 0.7; why = "damp roads"; }
+  else if (frost) { wet = 0.8; why = "frost-forming air"; }
+  const ice = clamp(10 * cold * wet);
+
+  // Rain: how wet you'd get (expected mm over the window), tempered by how likely it is.
+  const mm = sum(h.precipitation, next);
+  const chance = Math.max(0, ...next.map((i) => h.precipitation_probability?.[i] ?? (h.precipitation[i] > 0 ? 100 : 0)));
+  const peak = Math.max(0, ...next.map((i) => h.precipitation[i]));
+  const rain = clamp(10 * (1 - Math.exp(-mm / 3)) * (0.5 + 0.5 * chance / 100) + (peak >= 4 ? 1 : 0));
+
+  // Wind: strongest gust (or sustained wind x1.4) against the vehicle's limit.
+  const gust = Math.max(...next.map((i) => Math.max(h.wind_gusts_10m[i], h.wind_speed_10m[i] * 1.4)));
+  const wind = clamp(gust <= L.gustStop ? 8 * (gust - 10) / (L.gustStop - 10) : 8 + 2 * (gust - L.gustStop) / 12);
+
+  return {
+    ice: { score: ice, label: band(ice, ["Very low", "Low", "Possible", "Likely", "Very likely"]),
+      detail: `Surface down to ${surface.toFixed(0)}°C, ${why}` },
+    rain: { score: rain, label: band(rain, ["Staying dry", "Might get damp", "Getting wet", "Getting soaked", "Drenched"]),
+      detail: `${Math.round(chance)}% chance · ~${mm.toFixed(1)} mm expected` },
+    wind: { score: wind, label: band(wind, ["Calm", "Breezy", "Blustery", "Strong gusts", "Dangerous"]),
+      detail: `Gusts up to ${Math.round(Math.max(...next.map((i) => h.wind_gusts_10m[i])))} mph` },
+  };
+}
+
+function band(score, labels) { return labels[Math.min(4, Math.floor(score / 2.01))]; }
 
 function range(a, b) { return Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i); }

@@ -106,6 +106,20 @@
   .place { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; font-size: .85rem; margin-top: 8px; color: var(--ink); opacity: .7; }
   .place svg { width: 14px; height: 14px; }
 
+  .scores { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .score { background: var(--sand); border-radius: 16px; padding: 16px; display: grid; gap: 6px; }
+  .score .head { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+  .score .head svg { width: 22px; height: 22px; color: var(--moss); }
+  .score .num { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.04em; line-height: 1; }
+  .score .num small { font-size: .95rem; color: var(--muted); font-weight: 600; letter-spacing: 0; }
+  .score .gauge { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .score .gauge i { display: block; height: 100%; border-radius: inherit; transform-origin: left; animation: grow 1s .5s cubic-bezier(.2,.8,.2,1) both; }
+  .score .lbl { font-weight: 700; }
+  .score .lbl.s0 { color: var(--go); } .score .lbl.s1 { color: var(--care); } .score .lbl.s2 { color: var(--stop); }
+  .score .det { color: var(--muted); font-size: .85rem; }
+  .s0 { background: var(--go); } .s1 { background: var(--care); } .s2 { background: var(--stop); }
+  .score .lbl.s0, .score .lbl.s1, .score .lbl.s2 { background: none; }
+
   .best { display: flex; align-items: center; gap: 12px; font-weight: 600; }
   .best .ico { flex: none; width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--go-soft); color: var(--go); }
   .best .ico svg { width: 22px; height: 22px; }
@@ -317,6 +331,7 @@ function render() {
   const { level, reasons } = assess(h, mode, now);
   const levels = h.time.map((_, i) => assess(h, mode, i, 1).level);
   const win = bestWindow(levels, now);
+  const sc = scores(h, mode, now);
   const hhmm = (i) => h.time[i].slice(11, 16);
   const who = mode === "bicycle" ? "cycle" : "ride your motorbike";
 
@@ -338,6 +353,15 @@ function render() {
     card(`verdict ${V.cls}`, `
       <svg class="badge" viewBox="0 0 72 72" aria-hidden="true"><circle class="bg" cx="36" cy="36" r="32"/><circle class="ring" cx="36" cy="36" r="32" pathLength="1"/><path class="mark" pathLength="1" d="${V.mark}"/></svg>
       <div><h2>${V.title}</h2><p>${V.text}</p>${lastPlace ? `<span class="place">${svg("pin")}${esc(lastPlace)}</span>` : ""}</div>`)
+    + card("", `<h3>Risk scores · next 3 hours</h3><div class="scores">${[
+        ["ice", "Ice", sc.ice], ["rain", "Soak", sc.rain], ["wind", "Wind", sc.wind],
+      ].map(([icon, name, r]) => { const t = r.score >= 7 ? 2 : r.score >= 4 ? 1 : 0; return `
+        <div class="score" title="${name} risk ${r.score} out of 10">
+          <span class="head">${svg(icon)}${name} risk</span>
+          <span class="num"><span class="count" data-to="${r.score}">0</span><small> /10</small></span>
+          <span class="gauge"><i class="s${t}" style="width:${Math.max(4, r.score * 10)}%"></i></span>
+          <span class="lbl s${t}">${r.label}</span><span class="det">${esc(r.detail)}</span>
+        </div>`; }).join("")}</div>`)
     + card("", `<h3>Ride window</h3>
       <div class="best"><span class="ico">${svg("clock")}</span><span>${bestHtml}</span></div>
       <div class="hours" style="margin-top:14px">${h.time.map((_, i) => `
@@ -359,6 +383,22 @@ function render() {
     + `<div class="card map-card reveal" style="--i:${k++}"><div id="map" role="img" aria-label="Map of your location"></div></div>`;
   resultEl.hidden = false;
   drawMap();
+  countUp();
+}
+
+// Animate score numbers from 0 up to their value.
+function countUp() {
+  const els = resultEl.querySelectorAll(".count");
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return els.forEach((el) => el.textContent = el.dataset.to);
+  const start = performance.now() + 500, dur = 900;
+  const tick = (t) => {
+    const p = Math.max(0, Math.min(1, (t - start) / dur)), e = 1 - Math.pow(1 - p, 3);
+    els.forEach((el) => el.textContent = Math.round(e * el.dataset.to));
+    if (p < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  // Backstop: animation frames pause in background tabs, so make sure the final values land.
+  setTimeout(() => els.forEach((el) => el.textContent = el.dataset.to), 500 + dur + 100);
 }
 
 function drawMap() {
