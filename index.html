@@ -268,17 +268,33 @@ document.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListene
 }));
 
 btn.addEventListener("click", () => {
+  // Browsers silently refuse location on insecure (http) pages, so send people to https first.
+  if (!window.isSecureContext) {
+    return setStatus(`Location only works over a secure connection. Try https://${location.host}${location.pathname}`);
+  }
   if (!navigator.geolocation) return setStatus("Your browser can't share its location.");
   setLoading(true, "Finding you…");
   setStatus("");
   navigator.geolocation.getCurrentPosition(
     (pos) => run(pos.coords.latitude, pos.coords.longitude),
-    (err) => { setLoading(false); setStatus(err.code === 1
-      ? "Location access was blocked. Allow it for this site in your browser settings and try again."
-      : "Couldn't get your location. Please try again."); },
+    (err) => { setLoading(false); setStatus(err.code === 1 ? deniedHelp() : "Couldn't get your location. Please try again."); },
     { enableHighAccuracy: false, timeout: 15000, maximumAge: 300000 }
   );
 });
+
+// Once someone has said no, the browser won't ask again until they change it in settings.
+function deniedHelp() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/.test(ua)) {
+    return /CriOS/.test(ua)
+      ? "Location is blocked. On iPhone: Settings › Chrome › Location › While Using the App, then tap the button again."
+      : "Location is blocked. On iPhone: tap \"aA\" in the address bar › Website Settings › Location › Allow. If that's not there, check Settings › Privacy & Security › Location Services › Safari Websites.";
+  }
+  if (/Android/.test(ua)) {
+    return "Location is blocked. Tap the icon left of the web address › Permissions › Location › Allow, then tap the button again. Also check your phone's Location is switched on.";
+  }
+  return "Location is blocked. Click the icon left of the web address, allow Location for this site, then try again.";
+}
 
 async function run(lat, lon) {
   setLoading(true, "Reading the sky…");
