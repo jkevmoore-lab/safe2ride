@@ -38,16 +38,34 @@ async function fetchRoute(from, to, mode) {
 // its distance and travel time from the start.
 function makeCheckpoints(route) {
   const segs = Math.max(3, Math.min(20, Math.round(route.distance / MILE / 2.5)));
-  const last = route.coords.length - 1, cps = [];
-  let j = 0;
-  for (let k = 0; k <= segs; k++) {
-    const d = route.distance * k / segs;
-    while (j < last - 1 && route.cumD[j + 1] < d) j++;
-    const span = route.cumD[j + 1] - route.cumD[j] || 1, f = Math.max(0, Math.min(1, (d - route.cumD[j]) / span));
-    const [a1, o1] = route.coords[j], [a2, o2] = route.coords[Math.min(j + 1, last)];
-    cps.push({ lat: a1 + (a2 - a1) * f, lon: o1 + (o2 - o1) * f, dist: d, t: route.cumT[j] + (route.cumT[j + 1] - route.cumT[j]) * f, gi: j });
-  }
-  return cps;
+  return range(0, segs + 1).map((k) => pointAt(route, route.distance * k / segs));
+}
+
+// The point `d` metres along the route, with travel time to it and the index of the route line before it.
+function pointAt(route, d) {
+  const last = route.coords.length - 1;
+  let j = 0, lo = 0, hi = last - 1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (route.cumD[m] <= d) { j = m; lo = m + 1; } else hi = m - 1; }
+  j = Math.min(j, Math.max(0, last - 1));
+  const span = route.cumD[j + 1] - route.cumD[j] || 1, f = Math.max(0, Math.min(1, (d - route.cumD[j]) / span));
+  const [a1, o1] = route.coords[j], [a2, o2] = route.coords[Math.min(j + 1, last)];
+  return { lat: a1 + (a2 - a1) * f, lon: o1 + (o2 - o1) * f, dist: d, t: route.cumT[j] + (route.cumT[j + 1] - route.cumT[j]) * f, gi: j };
+}
+
+// Height (m) at evenly spaced points along the route, for the hills profile.
+async function fetchElevation(route, n = 80) {
+  const pts = range(0, n).map((k) => pointAt(route, route.distance * k / (n - 1)));
+  const url = `https://api.open-meteo.com/v1/elevation?latitude=${pts.map((p) => p.lat.toFixed(4)).join(",")}&longitude=${pts.map((p) => p.lon.toFixed(4)).join(",")}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("elevation " + res.status);
+  const j = await res.json();
+  return { d: pts.map((p) => p.dist), z: j.elevation };
+}
+
+function climbStats(z) {
+  let up = 0, down = 0;
+  for (let i = 1; i < z.length; i++) { const dz = z[i] - z[i - 1]; if (dz > 0) up += dz; else down -= dz; }
+  return { up: Math.round(up), down: Math.round(down), min: Math.round(Math.min(...z)), max: Math.round(Math.max(...z)) };
 }
 
 // Hourly weather for every checkpoint in one request. Times are unix seconds.
@@ -89,7 +107,7 @@ function evaluateDeparture(cps, wx, mode, dep) {
   // Worst instance of each hazard, labelled with where it happens.
   const byKind = {};
   pts.forEach((p) => p.reasons.forEach((r) => {
-    if (!byKind[r.kind] || r.level > byKind[r.kind].level) byKind[r.kind] = { ...r, text: `${where(p)}: ${lowerFirst(r.text)}` };
+    if (!byKind[r.kind] || r.level > byKind[r.kind].level) byKind[r.kind] = { ...r, text: withPlace(r.text, lowerFirst(where(p))) };
   }));
   const reasons = Object.values(byKind);
 
@@ -119,16 +137,31 @@ function evaluateDeparture(cps, wx, mode, dep) {
 
   const worst = (key) => pts.reduce((a, p) => (p.s[key].score > a.s[key].score ? p : a), pts[0]);
   const iceP = worst("ice"), windP = worst("wind");
+  const gp = pts.reduce((a, p) => (p.h.wind_gusts_10m[p.at] > a.h.wind_gusts_10m[a.at] ? p : a), pts[0]);
+  const topGust = Math.round(gp.h.wind_gusts_10m[gp.at]);
   const sc = {
-    ice: { score: iceP.s.ice.score, label: band(iceP.s.ice.score, ICE_LABELS), detail: `${iceP.s.ice.detail} (${lowerFirst(where(iceP))})` },
+    ice: { score: iceP.s.ice.score, label: band(iceP.s.ice.score, ICE_LABELS), detail: `${iceP.s.ice.detail}, ${near(iceP)}` },
     rain: { score: soak, label: band(soak, SOAK_LABELS), detail: mm < 0.1 ? `${Math.round(chance)}% chance · no rain expected on the ride` : `${Math.round(chance)}% chance · ~${mm.toFixed(1)} mm over the ride` },
-    wind: { score: windP.s.wind.score, label: band(windP.s.wind.score, WIND_LABELS), detail: `${windP.s.wind.detail} (${lowerFirst(where(windP))})` },
+    wind: { score: windP.s.wind.score, label: band(windP.s.wind.score, WIND_LABELS), detail: `Gusts up to ${topGust} mph, ${near(gp)}` },
   };
   const level = Math.max(0, ...pts.map((p) => p.level), ...reasons.map((r) => r.level));
+
+  // One-line summary, e.g. "Dry all the way, gusts to 33 mph around mile 36."
+  const parts = [];
+  if (mm < 0.1) parts.push("Dry all the way");
+  else {
+    const wettest = segs.reduce((a, g) => (g.rain * g.hours > a.rain * a.hours ? g : a), segs[0]);
+    const fall = ({ snow: "snow", sleet: "sleet", freezing: "freezing rain" })[precipType(wettest.from.h, wettest.from.at)] || "rain";
+    parts.push(`About ${mm.toFixed(1)} mm of ${fall} on the ride, most ${near(wettest.from)}`);
+  }
+  if (topGust >= LIMITS[mode].gustCare) parts.push(`gusts to ${topGust} mph ${near(gp)}`);
+  if (sc.ice.score >= 4) parts.push(`ice risk ${near(iceP)}`);
+  if (reasons.some((r) => r.kind === "headwind" && r.level >= 1)) parts.push("headwind most of the way");
+  const summary = parts.join(", ") + ".";
   // Prefer daylight when choosing a departure time.
   const dark = pts.filter((p) => p.h.is_day[p.at] === 0).length / pts.length;
   const cost = level * 100 + sc.ice.score + sc.rain.score + sc.wind.score + 3 * dark;
-  return { dep, arrive: dep + lastPt.t, level, cost, pts, segs, reasons, scores: sc, headD, tailD };
+  return { dep, arrive: dep + lastPt.t, level, cost, pts, segs, reasons, scores: sc, headD, tailD, summary };
 }
 
 // Leave now, then on each hour for the next 12 hours (as far as the forecast reaches).
@@ -151,8 +184,12 @@ function bearing(p, q) {
   return (Math.atan2(y, x) / r + 360) % 360;
 }
 
-function compass(deg) { return ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(deg / 22.5) % 16]; }
 function miles(m) { const v = m / MILE; return v < 10 ? v.toFixed(1) : Math.round(v); }
 function clock(ts) { return new Date(ts * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }); }
 function duration(s) { const m = Math.round(s / 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`; }
+// Put "where" after the hazard's first clause: "Gusts up to 31 mph at the start. Take care…".
+function withPlace(text, where) {
+  const m = /^(.+?)([.:])(?=\s|$)(.*)$/s.exec(text);
+  return m ? `${m[1]} ${where}${m[2]}${m[3]}` : `${text} ${where}`;
+}
 function lowerFirst(s) { return s.charAt(0).toLowerCase() + s.slice(1); }

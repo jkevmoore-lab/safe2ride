@@ -3,7 +3,7 @@ import fs from "fs";
 import assert from "assert/strict";
 
 const src = ["logic.js", "route.js"].map((f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
-const S = new Function(src + "; return { precipType, compass, assess, scores, bestWindow, soakScore, windScore, makeCheckpoints, evaluateDeparture, planDepartures, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE };")();
+const S = new Function(src + "; return { summarize, withPlace, climbStats, fetchElevation, pointAt, precipType, compass, assess, scores, bestWindow, soakScore, windScore, makeCheckpoints, evaluateDeparture, planDepartures, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE };")();
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log("  ✓", name); };
@@ -43,6 +43,20 @@ test("rain, sleet, snow and freezing rain are told apart", () => {
 });
 test("compass points", () => assert.deepEqual([0, 90, 225, 350].map(S.compass), ["N", "E", "SW", "N"]));
 
+test("summary: dry, then rain, with gusts", () => {
+  const h = hours({ precipitation: (v, i) => (i >= 9 ? 1.5 : 0), wind_gusts_10m: (v, i) => (i === 8 ? 33 : 12) });
+  assert.equal(S.summarize(h, "bicycle", 6, (i) => `h${i}`), "Dry until about h9, then rain, gusts to 33 mph around h8.");
+});
+test("summary: raining now, stops later", () => {
+  const h = hours({ precipitation: (v, i) => (i <= 7 ? 2 : 0) });
+  assert.equal(S.summarize(h, "bicycle", 6, (i) => `h${i}`), "Rain until about h8.");
+});
+test("hazard comes before the place", () => {
+  assert.equal(S.withPlace("Rain forecast (up to 2.0 mm/h). Allow longer braking distances.", "at the end"), "Rain forecast (up to 2.0 mm/h) at the end. Allow longer braking distances.");
+  assert.equal(S.withPlace("Gusts up to 40 mph: strong enough.", "around mile 5"), "Gusts up to 40 mph around mile 5: strong enough.");
+});
+test("climb stats", () => assert.deepEqual(S.climbStats([100, 120, 110, 150]), { up: 60, down: 10, min: 100, max: 150 }));
+
 console.log("Route maths");
 test("bearing north/east", () => {
   assert.ok(Math.abs(S.bearing({ lat: 51, lon: 0 }, { lat: 52, lon: 0 }) - 0) < 1);
@@ -75,7 +89,7 @@ test("rain only at the far end is located and timed", () => {
   const wx = cps.map((_, k) => hours(k === cps.length - 1 ? { precipitation: 3, precipitation_probability: 90, weather_code: 63 } : {}));
   const e = S.evaluateDeparture(cps, wx, "bicycle", t0 + 6 * 3600);
   const rain = e.reasons.find((r) => r.kind === "rain");
-  assert.ok(rain && rain.text.startsWith("At the end"), rain?.text);
+  assert.ok(rain && rain.text.includes("at the end"), rain?.text);
 });
 test("best departure avoids a shower", () => {
   // Rain everywhere for hours 6–8, dry afterwards.
@@ -96,12 +110,15 @@ if (process.argv.includes("--live")) {
     const c = S.makeCheckpoints(r);
     const wx = await S.fetchRouteWeather(c, S.forecastHoursFor(r));
     const plan = S.planDepartures(c, wx, mode, Math.floor(Date.now() / 1000));
+    const elev = await S.fetchElevation(r);
+    console.log(`    climb: ${JSON.stringify(S.climbStats(elev.z))}`);
     const b = plan.options[plan.best];
     test(`${mode}: Witney → Burford planned`, () => {
       assert.equal(wx.length, c.length);
       assert.ok(plan.options.length >= 6);
     });
     console.log(`    ${(r.distance / S.MILE).toFixed(1)} mi, ${Math.round(r.duration / 60)} min, ${c.length} checkpoints; levels by departure: ${plan.options.map((o) => o.level).join("")}; best leaves ${new Date(b.dep * 1000).toTimeString().slice(0, 5)}`);
+    console.log(`    summary: ${plan.options[0].summary}`);
     console.log(`    scores now: ice ${plan.options[0].scores.ice.score}, soak ${plan.options[0].scores.rain.score}, wind ${plan.options[0].scores.wind.score}; reasons: ${plan.options[0].reasons.map((x) => x.text).join(" | ") || "none"}`);
   }
 }

@@ -138,7 +138,7 @@ function scores(h, mode, at, ahead = 3) {
     ice: { score: ice, label: band(ice, ICE_LABELS),
       detail: `Surface down to ${surface.toFixed(0)}°C, ${why}` },
     rain: { score: rain, label: band(rain, SOAK_LABELS),
-      detail: `${Math.round(chance)}% chance · ~${mm.toFixed(1)} mm expected` },
+      detail: mm < 0.1 ? `${Math.round(chance)}% chance · no rain expected` : `${Math.round(chance)}% chance · ~${mm.toFixed(1)} mm expected` },
     wind: { score: wind, label: band(wind, WIND_LABELS),
       detail: `Gusts up to ${Math.round(Math.max(...next.map((i) => h.wind_gusts_10m[i])))} mph` },
   };
@@ -167,6 +167,31 @@ function precipType(h, i) {
   if (snow > 0) return mm > snow * 10 / 7 * 1.5 + 0.1 || h.temperature_2m[i] > 1.5 ? "sleet" : "snow";
   return mm >= 0.1 ? "rain" : null;
 }
+
+// One-line summary of the next `hours` hours from index `now`, e.g.
+// "Dry until 15:00, then rain, gusts to 33 mph around 16:00." `fmt(i)` formats hour i as a time.
+function summarize(h, mode, now, fmt, hours = 12) {
+  const idx = range(now, Math.min(h.time.length, now + hours));
+  const wet = (i) => h.precipitation[i] >= 0.2 || (h.snowfall?.[i] ?? 0) > 0 || precipType(h, i) === "freezing";
+  const fall = (i) => ({ snow: "snow", sleet: "sleet", freezing: "freezing rain" })[precipType(h, i)] || "rain";
+  const parts = [];
+  if (wet(now)) {
+    const stop = idx.find((i) => !wet(i));
+    parts.push(stop === undefined ? `${cap(fall(now))} for the next ${idx.length} hours` : `${cap(fall(now))} until about ${fmt(stop)}`);
+  } else {
+    const start = idx.find(wet);
+    parts.push(start === undefined ? `Dry for the next ${idx.length} hours` : `Dry until about ${fmt(start)}, then ${fall(start)}`);
+  }
+  const g = idx.reduce((a, i) => (h.wind_gusts_10m[i] > h.wind_gusts_10m[a] ? i : a), now);
+  if (h.wind_gusts_10m[g] >= LIMITS[mode].gustCare) parts.push(`gusts to ${Math.round(h.wind_gusts_10m[g])} mph ${g === now ? "now" : "around " + fmt(g)}`);
+  const ice = idx.find((i) => scores(h, mode, i, 1).ice.score >= 4);
+  if (ice !== undefined) parts.push(`ice risk ${ice === now ? "now" : "from about " + fmt(ice)}`);
+  return parts.join(", ") + ".";
+}
+
+function compass(deg) { return ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(deg / 22.5) % 16]; }
+
+function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
 function clamp10(x) { return Math.max(0, Math.min(10, Math.round(x))); }
 
