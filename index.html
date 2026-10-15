@@ -84,8 +84,60 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   #status { color: var(--muted); min-height: 1.5em; margin: 14px 4px 0; font-size: .95rem; }
 
+  /* Tabs: right here / plan a route */
+  .tabs { display: inline-flex; gap: 4px; background: rgba(255,255,255,.55); border-radius: 999px; padding: 4px; margin: 0 0 14px; }
+  .tabs button { border: 0; background: none; font: inherit; font-weight: 700; font-size: .92rem; color: var(--muted); padding: 8px 16px; border-radius: 999px; cursor: pointer; transition: background .25s, color .25s; }
+  .tabs button[aria-selected="true"] { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+  @media (prefers-color-scheme: dark) { .tabs { background: rgba(255,255,255,.06); } }
+
+  /* Route form */
+  .route-form { display: grid; gap: 10px; }
+  .field { position: relative; display: flex; align-items: center; gap: 10px; background: var(--card); border-radius: 16px; padding: 4px 6px 4px 16px; box-shadow: var(--shadow); }
+  .field .dot { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 3px solid var(--moss); }
+  .field .dot.end { background: var(--forest); border-color: var(--forest); border-radius: 3px; }
+  .field input { flex: 1; min-width: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--ink); padding: 12px 0; outline: none; }
+  .field input::placeholder { color: var(--muted); font-weight: 500; }
+  .field:focus-within { outline: 2px solid var(--lime); }
+  .mini { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 12px; background: var(--sand); color: var(--moss); cursor: pointer; }
+  .mini svg { width: 20px; height: 20px; }
+  .mini:hover { background: var(--line); }
+  .suggest { position: absolute; z-index: 1000; left: 0; right: 0; top: calc(100% + 6px); margin: 0; padding: 6px; list-style: none; background: var(--card); border-radius: 16px; box-shadow: 0 12px 32px rgba(20,56,43,.18); max-height: 300px; overflow-y: auto; }
+  .suggest li { padding: 10px 12px; border-radius: 10px; cursor: pointer; display: grid; }
+  .suggest li small { color: var(--muted); }
+  .suggest li[aria-selected="true"], .suggest li:hover { background: var(--sand); }
+  #pick-wrap { border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); background: var(--card); }
+  #pick-map { height: 240px; cursor: crosshair; }
+  #pick-wrap p { margin: 0; padding: 8px 14px; font-size: .85rem; color: var(--muted); }
+
+  /* Route results */
+  .trip { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: .88rem; color: var(--ink); opacity: .8; font-weight: 600; }
+  .deps { display: flex; gap: 8px; overflow-x: auto; padding: 6px 4px 8px; margin: 12px -4px 0; scrollbar-width: thin; }
+  .dep { flex: none; width: 70px; display: grid; justify-items: center; gap: 5px; padding: 10px 4px 8px; border-radius: 16px; border: 0; cursor: pointer;
+    background: var(--sand); color: var(--ink); font: inherit; font-size: .85rem; position: relative; transition: transform .2s; }
+  .dep:hover { transform: translateY(-2px); }
+  .dep[aria-pressed="true"] { outline: 2px solid var(--forest); outline-offset: -2px; }
+  .dep svg { width: 24px; height: 24px; color: var(--moss); }
+  .dep .bar { width: 100%; height: 6px; border-radius: 999px; }
+  .dep .star { position: absolute; top: -8px; right: -2px; background: var(--lime); color: var(--lime-ink); font-size: .65rem; font-weight: 800; padding: 2px 6px; border-radius: 999px; }
+  #route-map { height: 320px; background: var(--line); }
+  .cps { list-style: none; margin: 0; padding: 0; }
+  .cps li { display: grid; grid-template-columns: 14px 64px 28px 1fr; gap: 4px 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: .9rem; }
+  .cps li:last-child { border-bottom: 0; }
+  .cps .d { width: 12px; height: 12px; border-radius: 50%; }
+  .cps b { display: block; }
+  .cps small { color: var(--muted); }
+  .cps svg { width: 24px; height: 24px; color: var(--moss); }
+  .cps .wx { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+  .cps .wx span { white-space: nowrap; }
+  .cps .wx .w { color: var(--muted); }
+  .swap { animation: swap .35s ease; }
+  @keyframes swap { from { opacity: .3; } }
+  .pin-start { width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 4px solid #2d6a4f; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+  .pin-end { width: 18px; height: 18px; border-radius: 5px; background: #14382b; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+
   /* Results */
-  #result { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin: 8px 0 24px; }
+  #result, .results, #rr-top, #rr-bottom { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  #result, .results { margin: 8px 0 24px; }
   .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 20px; }
   .card h3 { margin: 0 0 12px; font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; }
   .reveal { opacity: 0; transform: translateY(18px); animation: up .6s cubic-bezier(.2,.8,.2,1) forwards; animation-delay: calc(var(--i, 0) * 90ms); }
@@ -190,7 +242,11 @@
 
   <section class="hero">
     <h1>Should you ride today?</h1>
-    <p class="lead">We check the last few hours, right now and the next 12 for ice, rain, wind and fog, then give you a straight answer.</p>
+    <p class="lead" id="lead">We check the last few hours, right now and the next 12 for ice, rain, wind and fog, then give you a straight answer.</p>
+    <div class="tabs" role="tablist" aria-label="Check type">
+      <button role="tab" id="tab-here" aria-selected="true">Right here</button>
+      <button role="tab" id="tab-route" aria-selected="false">Plan a route</button>
+    </div>
 
     <div class="controls">
       <div class="seg" id="seg" data-mode="bicycle" role="radiogroup" aria-label="What are you riding?">
@@ -204,6 +260,24 @@
         <span class="spin" aria-hidden="true"></span>
         <span id="btn-text">Check my location</span>
       </button>
+      <div class="route-form" id="route-form" hidden>
+        <div class="field"><span class="dot"></span>
+          <input id="from" type="text" autocomplete="off" placeholder="From: my location" aria-label="Starting point" aria-autocomplete="list" aria-controls="from-sug">
+          <button type="button" class="mini" id="use-loc" title="Start from my location" aria-label="Start from my location"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7.5"/></svg></button>
+          <ul class="suggest" id="from-sug" role="listbox" hidden></ul>
+        </div>
+        <div class="field"><span class="dot end"></span>
+          <input id="to" type="text" autocomplete="off" placeholder="Where to? e.g. Burford" aria-label="Destination" aria-autocomplete="list" aria-controls="to-sug">
+          <button type="button" class="mini" id="pick" title="Pick on the map" aria-label="Pick destination on the map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2zM9 4v14M15 6v14"/></svg></button>
+          <ul class="suggest" id="to-sug" role="listbox" hidden></ul>
+        </div>
+        <div id="pick-wrap" hidden><div id="pick-map"></div><p>Tap the map to set your destination.</p></div>
+        <button class="go-btn" id="plan">
+          <svg class="pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19c4-10 8 2 12-8 1.5-3.5 3-5 4-5"/><circle cx="4" cy="19" r="1.5"/><circle cx="20" cy="6" r="1.5"/></svg>
+          <span class="spin" aria-hidden="true"></span>
+          <span class="btn-text">Check my route</span>
+        </button>
+      </div>
     </div>
     <p id="status" role="status" aria-live="polite"></p>
 
@@ -231,10 +305,15 @@
   </section>
 
   <section id="result" hidden></section>
+  <section id="route-result" class="results" hidden>
+    <div id="rr-top"></div>
+    <div class="card map-card reveal" id="rr-map-card"><div id="route-map" role="img" aria-label="Map of your route coloured by conditions"></div></div>
+    <div id="rr-bottom"></div>
+  </section>
 
   <footer>
     <p>Safe2Ride is guidance only. It can't see the road in front of you: always use your own judgement.</p>
-    <p>Weather by <a href="https://open-meteo.com/">Open-Meteo</a> · Map © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</p>
+    <p>Weather by <a href="https://open-meteo.com/">Open-Meteo</a> · Routes by <a href="https://routing.openstreetmap.de/about.html">FOSSGIS OSRM</a> · Place search by <a href="https://photon.komoot.io/">Photon</a> · Map © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</p>
   </footer>
 </div>
 
@@ -260,7 +339,13 @@ const ICONS = {
   pin: '<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
 };
 const svg = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
-const REASON_ICON = { storm: "storm", snow: "snow", ice: "ice", wind: "wind", rain: "rain", wet: "drop", fog: "fog", heat: "heat", dark: "moon" };
+const REASON_ICON = { storm: "storm", snow: "snow", ice: "ice", wind: "wind", rain: "rain", wet: "drop", fog: "fog", heat: "heat", dark: "moon",
+  soak: "rain", headwind: "wind", tailwind: "wind", crosswind: "wind" };
+const VERDICT = [
+  { cls: "go", title: "Good to go", mark: "M24 37l8 8 16-17" },
+  { cls: "care", title: "Ride with care", mark: "M36 22v16M36 48v.5" },
+  { cls: "stop", title: "Not advised", mark: "M27 27l18 18M45 27L27 45" },
+];
 
 function weatherIcon(code, isDay) {
   if (code >= 95) return "storm";
@@ -278,7 +363,7 @@ let lastData = null, lastPlace = "", lastCoords = null, map = null;
 
 document.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListener("change", () => {
   seg.dataset.mode = r.value;
-  if (lastData) render();
+  if (lastData && !resultEl.hidden) render();
 }));
 
 btn.addEventListener("click", () => {
@@ -335,11 +420,8 @@ function render() {
   const hhmm = (i) => h.time[i].slice(11, 16);
   const who = mode === "bicycle" ? "cycle" : "ride your motorbike";
 
-  const V = [
-    { cls: "go", title: "Good to go", text: `Conditions look fine to ${who}. Enjoy it.`, mark: "M24 37l8 8 16-17" },
-    { cls: "care", title: "Ride with care", text: `You can ${who}, but conditions need extra care.`, mark: "M36 22v16M36 48v.5" },
-    { cls: "stop", title: "Not advised", text: `We'd advise against choosing to ${who} right now.`, mark: "M27 27l18 18M45 27L27 45" },
-  ][level];
+  const V = { ...VERDICT[level], text: [`Conditions look fine to ${who}. Enjoy it.`, `You can ${who}, but conditions need extra care.`,
+    `We'd advise against choosing to ${who} right now.`][level] };
 
   let bestHtml;
   if (!win) bestHtml = `<b>No clear window in the next 12 hours</b><small>Every hour has at least one hazard, so check the reasons below.</small>`;
@@ -351,17 +433,9 @@ function render() {
 
   resultEl.innerHTML =
     card(`verdict ${V.cls}`, `
-      <svg class="badge" viewBox="0 0 72 72" aria-hidden="true"><circle class="bg" cx="36" cy="36" r="32"/><circle class="ring" cx="36" cy="36" r="32" pathLength="1"/><path class="mark" pathLength="1" d="${V.mark}"/></svg>
+      ${badge(level)}
       <div><h2>${V.title}</h2><p>${V.text}</p>${lastPlace ? `<span class="place">${svg("pin")}${esc(lastPlace)}</span>` : ""}</div>`)
-    + card("", `<h3>Risk scores · next 3 hours</h3><div class="scores">${[
-        ["ice", "Ice", sc.ice], ["rain", "Soak", sc.rain], ["wind", "Wind", sc.wind],
-      ].map(([icon, name, r]) => { const t = r.score >= 7 ? 2 : r.score >= 4 ? 1 : 0; return `
-        <div class="score" title="${name} risk ${r.score} out of 10">
-          <span class="head">${svg(icon)}${name} risk</span>
-          <span class="num"><span class="count" data-to="${r.score}">0</span><small> /10</small></span>
-          <span class="gauge"><i class="s${t}" style="width:${Math.max(4, r.score * 10)}%"></i></span>
-          <span class="lbl s${t}">${r.label}</span><span class="det">${esc(r.detail)}</span>
-        </div>`; }).join("")}</div>`)
+    + card("", `<h3>Risk scores · next 3 hours</h3>${scoreTiles(sc)}`)
     + card("", `<h3>Ride window</h3>
       <div class="best"><span class="ico">${svg("clock")}</span><span>${bestHtml}</span></div>
       <div class="hours" style="margin-top:14px">${h.time.map((_, i) => `
@@ -370,9 +444,7 @@ function render() {
           <b>${Math.round(h.temperature_2m[i])}°</b><span class="bar lv${levels[i]}" style="--i:${i}"></span>
         </div>`).join("")}</div>
       <div class="legend"><span style="--c:var(--go)">Good</span><span style="--c:var(--care)">Take care</span><span style="--c:var(--stop)">Not advised</span><span>Faded = last ${PAST_HOURS} hours</span></div>`)
-    + card("", `<h3>Why</h3>${reasons.length
-        ? `<ul class="reasons">${reasons.map((r) => `<li class="l${r.level}"><span class="ico">${svg(REASON_ICON[r.kind])}</span><p>${esc(r.text)}</p></li>`).join("")}</ul>`
-        : `<p class="empty">No weather hazards found for the next 3 hours.</p>`}`)
+    + card("", `<h3>Why</h3>${reasonList(reasons, "No weather hazards found for the next 3 hours.")}`)
     + card("", `<h3>Right now · ${WMO[h.weather_code[now]] ?? ""}</h3><div class="stats">
         <div class="stat">${svg("temp")}<small>Air · feels like</small><strong>${Math.round(h.temperature_2m[now])}°</strong> <em>${Math.round(h.apparent_temperature[now])}°</em></div>
         <div class="stat">${svg("ice")}<small>Road surface</small><strong>${Math.round(h.soil_temperature_0cm[now])}°C</strong></div>
@@ -386,9 +458,30 @@ function render() {
   countUp();
 }
 
+function badge(level) {
+  return `<svg class="badge" viewBox="0 0 72 72" aria-hidden="true"><circle class="bg" cx="36" cy="36" r="32"/><circle class="ring" cx="36" cy="36" r="32" pathLength="1"/><path class="mark" pathLength="1" d="${VERDICT[level].mark}"/></svg>`;
+}
+
+function scoreTiles(sc) {
+  return `<div class="scores">${[["ice", "Ice", sc.ice], ["rain", "Soak", sc.rain], ["wind", "Wind", sc.wind]].map(([icon, name, r]) => {
+    const t = r.score >= 7 ? 2 : r.score >= 4 ? 1 : 0;
+    return `<div class="score" title="${name} risk ${r.score} out of 10">
+      <span class="head">${svg(icon)}${name} risk</span>
+      <span class="num"><span class="count" data-to="${r.score}">0</span><small> /10</small></span>
+      <span class="gauge"><i class="s${t}" style="width:${Math.max(4, r.score * 10)}%"></i></span>
+      <span class="lbl s${t}">${r.label}</span><span class="det">${esc(r.detail)}</span>
+    </div>`; }).join("")}</div>`;
+}
+
+function reasonList(reasons, empty) {
+  return reasons.length
+    ? `<ul class="reasons">${reasons.map((r) => `<li class="l${r.level}"><span class="ico">${svg(REASON_ICON[r.kind] || "cloud")}</span><p>${esc(r.text)}</p></li>`).join("")}</ul>`
+    : `<p class="empty">${empty}</p>`;
+}
+
 // Animate score numbers from 0 up to their value.
-function countUp() {
-  const els = resultEl.querySelectorAll(".count");
+function countUp(root = resultEl) {
+  const els = root.querySelectorAll(".count");
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return els.forEach((el) => el.textContent = el.dataset.to);
   const start = performance.now() + 500, dur = 900;
   const tick = (t) => {
@@ -418,5 +511,7 @@ function setLoading(on, text) {
 function setStatus(t) { statusEl.textContent = t; }
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 </script>
+<script src="route.js"></script>
+<script src="route-ui.js"></script>
 </body>
 </html>
