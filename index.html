@@ -130,6 +130,18 @@
   .cps .wx { display: flex; flex-wrap: wrap; gap: 2px 12px; }
   .cps .wx span { white-space: nowrap; }
   .cps .wx .w { color: var(--muted); }
+  /* Compact weather tags: on the map and in the along-the-way list */
+  .wchip { position: absolute; left: 0; bottom: 9px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 5px;
+    background: var(--card); color: var(--ink); border: 2px solid var(--go); border-radius: 999px; box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    font: 700 12px/1 "Plus Jakarta Sans", system-ui, sans-serif; white-space: nowrap; animation: pop .35s cubic-bezier(.3,1.4,.5,1) both; }
+  .wchip.b1 { border-color: var(--care); } .wchip.b2 { border-color: var(--stop); }
+  .wchip > svg { width: 17px; height: 17px; color: var(--moss); }
+  @keyframes pop { from { opacity: 0; transform: translateX(-50%) scale(.6); } }
+  .wa { display: inline-flex; align-items: center; gap: 1px; font-weight: 700; }
+  .wa svg { width: 14px; height: 14px; stroke-width: 2.6; transform: rotate(var(--r)); }
+  .wa i { font-style: normal; }
+  .w0 { color: var(--muted); } .w1 { color: var(--moss); } .w2 { color: var(--care); } .w3 { color: var(--stop); }
+  .cps .wa svg { width: 16px; height: 16px; }
   .swap { animation: swap .35s ease; }
   @keyframes swap { from { opacity: .3; } }
   .pin-start { width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 4px solid #2d6a4f; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
@@ -318,7 +330,7 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="logic.js?v=202610151132"></script>
+<script src="logic.js?v=202610151140"></script>
 <script>
 const ICONS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
@@ -328,6 +340,8 @@ const ICONS = {
   rain: '<path d="M16.5 13H8a4 4 0 1 1 1-7.9A5 5 0 0 1 18.5 7 3 3 0 0 1 16.5 13z"/><path d="M8 17l-1 3M12 17l-1 3M16 17l-1 3"/>',
   snow: '<path d="M16.5 13H8a4 4 0 1 1 1-7.9A5 5 0 0 1 18.5 7 3 3 0 0 1 16.5 13z"/><path d="M8 17v.01M12 19v.01M16 17v.01M10 21.5v.01M14 21.5v.01" stroke-width="2.6"/>',
   fog: '<path d="M4 8h16M3 12h18M5 16h14M8 20h8"/>',
+  sleet: '<path d="M16.5 13H8a4 4 0 1 1 1-7.9A5 5 0 0 1 18.5 7 3 3 0 0 1 16.5 13z"/><path d="M8 17l-1 3M16 17l-1 3"/><path d="M12 18v.01M11 21.5v.01" stroke-width="2.6"/>',
+  arrow: '<path d="M12 20V5M6 11l6-6 6 6"/>',
   storm: '<path d="M16.5 13H8a4 4 0 1 1 1-7.9A5 5 0 0 1 18.5 7 3 3 0 0 1 16.5 13z"/><path d="M13 13l-3 4.5h4L11 22"/>',
   wind: '<path d="M3 8h11a3 3 0 1 0-3-3M3 16h15a3 3 0 1 1-3 3M3 12h7"/>',
   temp: '<path d="M14 14.8V4a2 2 0 0 0-4 0v10.8a4 4 0 1 0 4 0z"/>',
@@ -511,7 +525,7 @@ function setLoading(on, text) {
 function setStatus(t) { statusEl.textContent = t; }
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 </script>
-<script src="route.js?v=202610151132"></script>
-<script src="route-ui.js?v=202610151132"></script>
+<script src="route.js?v=202610151140"></script>
+<script src="route-ui.js?v=202610151140"></script>
 </body>
 </html>

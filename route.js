@@ -151,6 +151,7 @@ function bearing(p, q) {
   return (Math.atan2(y, x) / r + 360) % 360;
 }
 
+function compass(deg) { return ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(deg / 22.5) % 16]; }
 function miles(m) { const v = m / MILE; return v < 10 ? v.toFixed(1) : Math.round(v); }
 function clock(ts) { return new Date(ts * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }); }
 function duration(s) { const m = Math.round(s / 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`; }

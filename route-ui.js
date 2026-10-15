@@ -203,13 +203,13 @@ function renderRoute(first, fit) {
     <div class="card ${anim(3)}"><h3>Risk scores · along the route</h3>${scoreTiles(o.scores)}</div>
     <div class="card ${anim(4)}"><h3>Why</h3>${reasonList(o.reasons, "No weather hazards found along the route.")}</div>
     <div class="card ${anim(5)}"><h3>Along the way</h3><ul class="cps">${o.pts.map((p, k) => {
-      const g = o.segs[Math.min(k, o.segs.length - 1)], h = p.h, i = p.at;
+      const g = o.segs[Math.min(k, o.segs.length - 1)], h = p.h, i = p.at, b = wxBits(h, i);
       const wind = g.head >= 6 ? "headwind" : g.head <= -6 ? "tailwind" : h.wind_speed_10m[i] >= 8 ? "crosswind" : "light wind";
       const label = k === 0 ? `Start · ${esc(trip.from.name)}` : k === o.pts.length - 1 ? `Arrive · ${esc(trip.to.name)}` : `Mile ${miles(p.dist)}`;
       return `<li><span class="d lv${p.level}"></span><span><b>${clock(p.eta)}</b><small>${k === 0 || k === o.pts.length - 1 ? miles(p.dist) + " mi" : ""}</small></span>
-        ${svg(weatherIcon(h.weather_code[i], h.is_day[i]))}
-        <span><b>${label}</b><span class="wx"><span>${Math.round(h.temperature_2m[i])}°</span><span>${h.precipitation[i] > 0 ? h.precipitation[i].toFixed(1) + " mm rain" : "dry"}</span>
-          <span>${Math.round(h.wind_speed_10m[i])}–${Math.round(h.wind_gusts_10m[i])} mph</span><span class="w">${wind}</span></span></span></li>`;
+        ${svg(b.icon)}
+        <span><b>${label}</b><span class="wx"><span>${b.temp}°</span><span>${b.fall}</span>
+          <span>${b.arrow}<span class="w">&nbsp;gusts ${Math.round(h.wind_gusts_10m[i])}</span></span><span class="w">${wind}</span></span></span></li>`;
     }).join("")}</ul></div>`;
 
   routeEl.hidden = false;
@@ -217,11 +217,40 @@ function renderRoute(first, fit) {
   countUp(routeEl);
 }
 
+// Compact weather for one point: icon (rain/sleet/snow aware), temperature, wind arrow.
+function wxBits(h, i) {
+  const kind = precipType(h, i), code = h.weather_code[i];
+  const icon = kind === "freezing" ? "sleet" : kind || (code >= 51 && code < 95 ? "cloud" : weatherIcon(code, h.is_day[i]));
+  const mm = h.precipitation[i];
+  const fall = { rain: `${mm.toFixed(1)} mm rain`, sleet: `sleet ${mm.toFixed(1)} mm`, snow: `snow ${h.snowfall[i].toFixed(1)} cm`, freezing: "freezing rain" }[kind] || "dry";
+  const ws = h.wind_speed_10m[i], dir = h.wind_direction_10m[i];
+  const arrow = `<span class="wa w${ws < 10 ? 0 : ws < 20 ? 1 : ws < 30 ? 2 : 3}" style="--r:${(dir + 180) % 360}deg" title="Wind from the ${compass(dir)}, ${Math.round(ws)} mph">${svg("arrow")}<i>${Math.round(ws)}</i></span>`;
+  return { icon, fall, arrow, temp: Math.round(h.temperature_2m[i]) };
+}
+
+// Weather tags on the map, thinned so they never overlap. Hazards and the ends win space first.
+let chips = [];
+function layoutChips() {
+  if (!routeMap || !chipLayer) return;
+  chipLayer.clearLayers();
+  const placed = [];
+  const order = chips.map((c, k) => ({ ...c, k })).sort((a, b) => b.level - a.level || b.end - a.end || a.k - b.k);
+  for (const c of order) {
+    const pt = routeMap.latLngToLayerPoint(c.ll);
+    if (placed.some((q) => Math.abs(q.x - pt.x) < 96 && Math.abs(q.y - pt.y) < 32)) continue;
+    placed.push(pt);
+    c.marker.addTo(chipLayer);
+  }
+}
+let chipLayer = null;
+
 function drawRoute(o, fit) {
   if (!window.L) return;
   if (!routeMap) {
     routeMap = L.map("route-map", { zoomControl: true, attributionControl: false, scrollWheelZoom: false });
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(routeMap);
+    chipLayer = L.layerGroup().addTo(routeMap);
+    routeMap.on("zoomend", layoutChips);
   }
   routeMap.invalidateSize();
   if (routeLayer) routeLayer.remove();
@@ -244,5 +273,14 @@ function drawRoute(o, fit) {
   const pin = (cls, ll, title) => L.marker(ll, { title, icon: L.divIcon({ className: "", html: `<div class="${cls}"></div>`, iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(routeLayer);
   pin("pin-start", coords[0], trip.from.name);
   pin("pin-end", coords[coords.length - 1], trip.to.name);
-  if (fit) routeMap.fitBounds(L.latLngBounds(coords), { padding: [24, 24] });
+  if (fit) routeMap.fitBounds(L.latLngBounds(coords), { padding: [40, 24] });
+
+  chips = o.pts.map((p, k) => {
+    const h = p.h, i = p.at, b = wxBits(h, i);
+    const marker = L.marker([p.lat, p.lon], { keyboard: false, icon: L.divIcon({ className: "", iconSize: [0, 0],
+      html: `<div class="wchip b${p.level}">${svg(b.icon)}<span>${b.temp}°</span>${b.arrow}</div>` }) })
+      .bindTooltip(`<b>${k === 0 ? "Start" : k === o.pts.length - 1 ? "Arrive" : "Mile " + miles(p.dist)} · ${clock(p.eta)}</b><br>${WMO[h.weather_code[i]] ?? ""}, ${b.temp}° · ${b.fall}<br>Wind from the ${compass(h.wind_direction_10m[i])}, ${Math.round(h.wind_speed_10m[i])} mph, gusts ${Math.round(h.wind_gusts_10m[i])}`, { direction: "top", offset: [0, -30] });
+    return { marker, ll: L.latLng(p.lat, p.lon), level: p.level, end: k === 0 || k === o.pts.length - 1 ? 1 : 0 };
+  });
+  layoutChips();
 }

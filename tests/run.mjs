@@ -3,7 +3,7 @@ import fs from "fs";
 import assert from "assert/strict";
 
 const src = ["logic.js", "route.js"].map((f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
-const S = new Function(src + "; return { assess, scores, bestWindow, soakScore, windScore, makeCheckpoints, evaluateDeparture, planDepartures, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE };")();
+const S = new Function(src + "; return { precipType, compass, assess, scores, bestWindow, soakScore, windScore, makeCheckpoints, evaluateDeparture, planDepartures, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE };")();
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log("  ✓", name); };
@@ -31,6 +31,17 @@ test("frosty night scores high ice and stops", () => {
 test("drizzle at 90% is not a soaking", () => assert.ok(S.soakScore(0.3, 90, 0.1) <= 2));
 test("5 mm/h downpour is drenched", () => assert.ok(S.soakScore(15, 95, 5) >= 9));
 test("wind limits differ by vehicle", () => assert.ok(S.windScore(30, "bicycle") > S.windScore(30, "motorbike")));
+
+test("rain, sleet, snow and freezing rain are told apart", () => {
+  const at = (o) => S.precipType(hours(o), 6);
+  assert.equal(at({}), null);
+  assert.equal(at({ precipitation: 1.2, weather_code: 61 }), "rain");
+  assert.equal(at({ precipitation: 1.4, snowfall: 1, temperature_2m: -1, weather_code: 73 }), "snow");
+  assert.equal(at({ precipitation: 3, snowfall: 0.3, temperature_2m: 1, weather_code: 68 }), "sleet");
+  assert.equal(at({ precipitation: 0.5, snowfall: 0.2, temperature_2m: 2.5, weather_code: 71 }), "sleet");
+  assert.equal(at({ precipitation: 0.4, weather_code: 66, temperature_2m: -1 }), "freezing");
+});
+test("compass points", () => assert.deepEqual([0, 90, 225, 350].map(S.compass), ["N", "E", "SW", "N"]));
 
 console.log("Route maths");
 test("bearing north/east", () => {

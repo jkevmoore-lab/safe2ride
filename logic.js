@@ -159,6 +159,15 @@ function windScore(gust, mode) {
   return clamp10(gust <= stop ? 8 * (gust - 10) / (stop - 10) : 8 + 2 * (gust - stop) / 12);
 }
 
+// What's falling at hour i: null (dry), "rain", "sleet", "snow" or "freezing" (freezing rain/drizzle).
+// Open-Meteo snowfall is cm; 7 cm of snow ≈ 10 mm of water.
+function precipType(h, i) {
+  const code = h.weather_code[i], mm = h.precipitation[i] ?? 0, snow = h.snowfall?.[i] ?? 0;
+  if ([56, 57, 66, 67].includes(code)) return "freezing";
+  if (snow > 0) return mm > snow * 10 / 7 * 1.5 + 0.1 || h.temperature_2m[i] > 1.5 ? "sleet" : "snow";
+  return mm >= 0.1 ? "rain" : null;
+}
+
 function clamp10(x) { return Math.max(0, Math.min(10, Math.round(x))); }
 
 function band(score, labels) { return labels[Math.min(4, Math.floor(score / 2.01))]; }
