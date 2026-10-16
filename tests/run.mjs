@@ -2,8 +2,12 @@
 import fs from "fs";
 import assert from "assert/strict";
 
-const src = ["logic.js", "route.js"].map((f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
-const S = new Function(src + "; return { summarize, withPlace, climbStats, fetchElevation, pointAt, precipType, compass, assess, scores, bestWindow, soakScore, windScore, makeCheckpoints, evaluateDeparture, planDepartures, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE };")();
+const src = ["logic.js", "route.js", "loop.js"].map((f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
+const S = new Function(src + "; return { openAt, classifyWay, surfaceStats, loopWaypoints, overlapPct, insertStop, haversine, destPoint, fetchCycleRoute, cycleProfile, planLoop, addCafeStop, summarize, withPlace, climbStats, fetchElevation, pointAt, precipType, compass, assess, scores, bestWindow, soakScore, windScore, makeCheckpoints, evaluateDeparture, planDepartures, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE };")();
+
+// Browsers send a User-Agent automatically; Node doesn't, and some map services require one.
+const realFetch = globalThis.fetch;
+globalThis.fetch = (url, init = {}) => realFetch(url, { ...init, headers: { "User-Agent": "Safe2Ride-tests/1.0 (https://safe2ride.co.uk)", ...(init.headers || {}) } });
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log("  ✓", name); };
@@ -101,6 +105,73 @@ test("best departure avoids a shower", () => {
   assert.ok(plan.options[0].level >= 1);
 });
 
+console.log("Opening hours");
+const at = (d, hm) => new Date(`2026-10-${d}T${hm}:00`);   // 12 Oct 2026 is a Monday
+test("simple daily hours", () => {
+  assert.equal(S.openAt("Mo-Su 08:30-17:00", at(14, "10:00")), true);
+  assert.equal(S.openAt("Mo-Su 08:30-17:00", at(14, "17:30")), false);
+});
+test("weekday and weekend rules, later rules win", () => {
+  const oh = "Mo-Fr 07:00-16:00; Sa,Su 09:00-15:00; Tu off";
+  assert.equal(S.openAt(oh, at(12, "08:00")), true);    // Monday
+  assert.equal(S.openAt(oh, at(13, "08:00")), false);   // Tuesday off
+  assert.equal(S.openAt(oh, at(17, "08:00")), false);   // Saturday before 9
+  assert.equal(S.openAt(oh, at(18, "14:00")), true);    // Sunday
+});
+test("split hours, 24/7, unknown and unparseable", () => {
+  assert.equal(S.openAt("Mo-Sa 08:00-12:00,13:00-17:00", at(12, "12:30")), false);
+  assert.equal(S.openAt("24/7", at(12, "03:00")), true);
+  assert.equal(S.openAt("", at(12, "10:00")), null);
+  assert.equal(S.openAt("Apr-Oct Mo-Su 10:00-16:00", at(12, "10:00")), null);
+});
+
+console.log("Surfaces");
+test("road and surface classes", () => {
+  const c = S.classifyWay;
+  assert.equal(c("highway=primary surface=asphalt"), "busy");
+  assert.equal(c("highway=unclassified surface=asphalt"), "quiet");
+  assert.equal(c("highway=residential"), "quiet");
+  assert.equal(c("highway=cycleway"), "path");
+  assert.equal(c("highway=track surface=compacted"), "g1");
+  assert.equal(c("highway=track tracktype=grade3"), "g2");
+  assert.equal(c("highway=bridleway surface=grass"), "g3");
+  assert.equal(c("highway=path mtb:scale=2"), "g3");
+  assert.equal(c("highway=track"), "unknown");
+});
+test("surface stats join nearby problem stretches", () => {
+  const r = { distance: 1000, cumD: [0, 300, 400, 500, 1000], cls: ["quiet", "g2", "quiet", "g2"] };
+  const st = S.surfaceStats(r, "road");
+  assert.equal(Math.round(st.pct.g2), 60);
+  assert.equal(st.issues.length, 1);
+  assert.equal(st.issues[0].len, 600);
+  assert.equal(S.surfaceStats(r, "mtb").issues.length, 0);
+});
+test("bike profiles", () => {
+  assert.equal(S.cycleProfile("road", true, true), "fastbike-verylowtraffic");
+  assert.equal(S.cycleProfile("gravel", true, true), "gravel");
+  assert.equal(S.cycleProfile("mtb", false, true), "trekking");
+});
+
+console.log("Loops");
+test("loop waypoints start and end at home, far point in the chosen direction", () => {
+  const start = { lat: 51.78, lon: -1.48 }, w = S.loopWaypoints(start, 48000, 90);
+  assert.equal(w.length, 5); assert.equal(w[0], start); assert.equal(w[4], start);
+  const far = w[2], r = 48000 / (2 * Math.PI * 1.25);
+  assert.ok(Math.abs(S.haversine([start.lat, start.lon], [far.lat, far.lon]) - 2 * r) < 50);
+  assert.ok(far.lon > start.lon && Math.abs(far.lat - start.lat) < 0.01);
+});
+test("out-and-back route counts as overlap; a square loop doesn't", () => {
+  const line = (pts) => { const coords = pts, cumD = [0]; for (let i = 1; i < pts.length; i++) cumD.push(cumD[i - 1] + S.haversine(pts[i - 1], pts[i])); return { coords, cumD, cumT: cumD.map((d) => d / 5), distance: cumD.at(-1) }; };
+  const a = [51.7, -1.4], b = [51.72, -1.4], c = [51.72, -1.37], d = [51.7, -1.37];
+  assert.ok(S.overlapPct(line([a, b, a])) > 40);
+  assert.ok(S.overlapPct(line([a, b, c, d, a])) < 5);
+});
+test("a stop goes between the waypoints either side of it", () => {
+  const route = { coords: [[0, 0], [0, 1], [0, 2], [0, 3]], cumD: [0, 1, 2, 3], distance: 3 };
+  const wps = [{ lat: 0, lon: 0 }, { lat: 0, lon: 1 }, { lat: 0, lon: 3 }];
+  assert.deepEqual(S.insertStop(wps, route, { lat: 0.01, lon: 2 }).map((w) => w.lon), [0, 1, 2, 3]);
+});
+
 if (process.argv.includes("--live")) {
   console.log("Live APIs");
   const places = await S.searchPlaces("Burford", [51.8, -1.5]);
@@ -121,5 +192,16 @@ if (process.argv.includes("--live")) {
     console.log(`    summary: ${plan.options[0].summary}`);
     console.log(`    scores now: ice ${plan.options[0].scores.ice.score}, soak ${plan.options[0].scores.rain.score}, wind ${plan.options[0].scores.wind.score}; reasons: ${plan.options[0].reasons.map((x) => x.text).join(" | ") || "none"}`);
   }
+}
+if (process.argv.includes("--live")) {
+  console.log("Live loop");
+  const start = { lat: 51.7856, lon: -1.4857 };
+  const t0 = Date.now();
+  const plan = await S.planLoop(start, 15, "road", { avoidBusy: true, offroad: false }, { from: 240, speed: 12 });
+  const b = plan.best;
+  test("15-mile road loop from Witney is within 15% of target", () => assert.ok(Math.abs(b.route.distance / S.MILE - 15) < 2.25, (b.route.distance / S.MILE).toFixed(1)));
+  console.log(`    ${(b.route.distance / S.MILE).toFixed(1)} mi, climb ${b.route.climb} m, score ${b.score.total.toFixed(1)} ${JSON.stringify(Object.fromEntries(Object.entries(b.score.parts).map(([k, v]) => [k, +v.toFixed(1)])))}; surfaces ${JSON.stringify(Object.fromEntries(Object.entries(b.score.stats.pct).filter(([, v]) => v > 0.5).map(([k, v]) => [k, Math.round(v)])))}; ${plan.others.length} alternatives; ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+  const withCafe = await S.addCafeStop(b, "road", {}, Math.floor(Date.now() / 1000));
+  console.log(`    café: ${withCafe.cafe ? `${withCafe.cafe.name} (open: ${withCafe.cafe.open}) at ${Math.round(withCafe.cafe.frac * 100)}%, loop now ${(withCafe.route.distance / S.MILE).toFixed(1)} mi` : "none found"}`);
 }
 console.log(`\n${passed} passed`);

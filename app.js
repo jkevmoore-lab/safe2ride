@@ -1,4 +1,4 @@
-// Safe2Ride page script: shared helpers and the "Right here" tab.
+// Safe2Ride shared page helpers: icons, cards, charts, the "Safe to ride here?" check and "How we decide".
 
 const ICONS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
@@ -40,43 +40,31 @@ function weatherIcon(code, isDay) {
 }
 
 const $ = (id) => document.getElementById(id);
-const statusEl = $("status"), resultEl = $("result"), btn = $("check"), seg = $("seg"), heroEl = document.querySelector(".hero");
-let lastData = null, lastPlace = "", lastCoords = null, map = null;
 
-// Small per-browser memory: vehicle, saved and recent places. Fails quietly in private mode.
+// Small per-browser memory: settings, saved and recent places. Fails quietly in private mode.
 const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem("s2r." + k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem("s2r." + k, JSON.stringify(v)); } catch {} },
 };
-if (store.get("mode", "bicycle") === "motorbike") { $("m-moto").checked = true; seg.dataset.mode = "motorbike"; }
-const currentMode = () => document.querySelector('input[name="mode"]:checked').value;
 
-document.querySelectorAll('input[name="mode"]').forEach((r) => r.addEventListener("change", () => {
-  seg.dataset.mode = r.value;
-  store.set("mode", r.value);
-  if (lastData && !resultEl.hidden) render();
-}));
+function setStatus(t, error = false) { const el = $("status"); el.textContent = t; el.classList.toggle("error", error && !!t); }
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+const LINE_DASH = [null, "10 8", "1 9"];   // weather: take care = dashed, not advised = dotted
+function levelColours() {
+  const css = getComputedStyle(document.documentElement);
+  return ["--go", "--care", "--stop"].map((v) => css.getPropertyValue(v).trim());
+}
 
-// Any "how we decide" link opens that panel.
-document.addEventListener("click", (e) => { if (e.target.closest('a[href="#how"]')) $("how").open = true; });
-
-// Once a result is showing, shrink the header so the answer comes first on phones.
-function setCompact(on) { heroEl.classList.toggle("compact", on); }
-
-btn.addEventListener("click", () => {
-  // Browsers silently refuse location on insecure (http) pages, so send people to https first.
-  if (!window.isSecureContext) {
-    return setStatus(`Location only works over a secure connection. Try https://${location.host}${location.pathname}`);
-  }
-  if (!navigator.geolocation) return setStatus("Your browser can't share its location.");
-  setLoading(true, "Finding you…");
-  setStatus("");
-  navigator.geolocation.getCurrentPosition(
-    (pos) => run(pos.coords.latitude, pos.coords.longitude),
-    (err) => { setLoading(false); setStatus(err.code === 1 ? deniedHelp() : "Couldn't get your location. Please try again."); },
-    { enableHighAccuracy: false, timeout: 15000, maximumAge: 300000 }
-  );
-});
+function getPosition() {
+  return new Promise((resolve, reject) => {
+    if (!window.isSecureContext) return reject(new Error(`Location only works over a secure connection. Try https://${location.host}${location.pathname}`));
+    if (!navigator.geolocation) return reject(new Error("Your browser can't share its location. Type a starting point instead."));
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude, name: "Your location", label: "Your location" }),
+      (err) => reject(new Error(err.code === 1 ? deniedHelp() : "Couldn't get your location. Please try again.")),
+      { enableHighAccuracy: false, timeout: 15000, maximumAge: 300000 });
+  });
+}
 
 // Once someone has said no, the browser won't ask again until they change it in settings.
 function deniedHelp() {
@@ -90,72 +78,6 @@ function deniedHelp() {
     return "Location is blocked. Tap the icon left of the web address › Permissions › Location › Allow, then tap the button again. Also check your phone's Location is switched on.";
   }
   return "Location is blocked. Click the icon left of the web address, allow Location for this site, then try again.";
-}
-
-async function run(lat, lon) {
-  setLoading(true, "Reading the sky…");
-  try {
-    const [data, place] = await Promise.all([fetchWeather(lat, lon), fetchPlace(lat, lon)]);
-    lastData = data; lastPlace = place; lastCoords = [lat, lon];
-    render();
-    $("intro").hidden = true;
-    setTimeout(() => resultEl.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
-  } catch (e) {
-    setStatus("Couldn't fetch the weather right now. Please try again in a moment.");
-  } finally {
-    setLoading(false);
-  }
-}
-
-function render() {
-  const mode = currentMode();
-  const h = lastData.hourly, n = h.time.length, now = Math.min(PAST_HOURS, n - 1);
-  const { level, reasons } = assess(h, mode, now);
-  const levels = h.time.map((_, i) => assess(h, mode, i, 1).level);
-  const win = bestWindow(levels, now);
-  const sc = scores(h, mode, now);
-  const hhmm = (i) => h.time[i].slice(11, 16);
-  const who = mode === "bicycle" ? "cycle" : "ride your motorbike";
-  const V = { ...VERDICT[level], text: [`Conditions look fine to ${who}.`, `You can ${who}, but conditions need extra care.`,
-    `We'd advise against choosing to ${who} right now.`][level] };
-
-  let bestHtml;
-  if (!win) bestHtml = `<b>No clear window in the next 12 hours</b><small>Every hour has at least one hazard, so check the reasons below.</small>`;
-  else if (win.start === now) bestHtml = `<b>Good now until ${win.end >= n ? "at least " + hhmm(n - 1) : hhmm(win.end)}</b><small>Clear riding conditions from right now.</small>`;
-  else bestHtml = `<b>Best time to ride: ${hhmm(win.start)}–${win.end >= n ? hhmm(n - 1) + "+" : hhmm(win.end)}</b><small>The longest stretch of clear conditions ahead.</small>`;
-
-  let k = 0;
-  const card = (cls, inner) => `<div class="card reveal ${cls}" style="--i:${k++}">${inner}</div>`;
-
-  resultEl.innerHTML =
-    card(`verdict ${V.cls}`, `${badge(level)}
-      <div><h2>${V.title}</h2><p>${V.text}</p>
-        <p class="summary">${esc(summarize(h, mode, now, hhmm))}</p>
-        ${lastPlace ? `<span class="place">${svg("pin")}${esc(lastPlace)}</span>` : ""}
-        <small class="disc">Guidance only: use your own judgement on the road.</small></div>`)
-    + card("", `<h2 class="ch">Ride window</h2>
-      <div class="best"><span class="ico">${svg("clock")}</span><span>${bestHtml}</span></div>
-      <div class="hours-wrap">${rainChart(h, now)}<div class="hours">${h.time.map((_, i) => {
-        const b = wxBits(h, i);
-        return `<div class="hour ${i < now ? "past" : ""} ${i === now ? "now" : ""}" style="--i:${i}" title="${VERDICT[levels[i]].title}: ${WMO[h.weather_code[i]] ?? ""}">
-          <span class="t">${i === now ? "Now" : hhmm(i)}</span>${svg(b.icon)}<b>${b.temp}°</b>${lvPill(levels[i], i)}</div>`;
-      }).join("")}</div></div>
-      <div class="chart-key"><span class="kr">Rain (mm per hour)</span><span class="kg">Gusts (mph)</span><span>Faded = last ${PAST_HOURS} hours</span></div>
-      ${legend()}`)
-    + card("", `<h2 class="ch">Risk scores · next 3 hours <a href="#how">How we score</a></h2>${scoreTiles(sc)}`)
-    + card("", `<h2 class="ch">Why</h2>${reasonList(reasons, "No weather hazards found for the next 3 hours.")}`)
-    + card("quiet", `<h2 class="ch">Right now · ${WMO[h.weather_code[now]] ?? ""}</h2><div class="stats">
-        <div class="stat">${svg("temp")}<small>Air · feels like</small><strong>${Math.round(h.temperature_2m[now])}°</strong> <em>${Math.round(h.apparent_temperature[now])}°</em></div>
-        <div class="stat">${svg("ice")}<small>Road surface</small><strong>${Math.round(h.soil_temperature_0cm[now])}°C</strong></div>
-        <div class="stat">${svg("wind")}<small>Wind · gusts</small><strong>${Math.round(h.wind_speed_10m[now])}</strong> <em>${Math.round(h.wind_gusts_10m[now])} mph from the ${compass(h.wind_direction_10m[now])}</em></div>
-        <div class="stat">${svg("drop")}<small>Rain now · last ${PAST_HOURS}h</small><strong>${h.precipitation[now].toFixed(1)}</strong> <em>${h.precipitation.slice(0, now).reduce((a, b) => a + b, 0).toFixed(1)} mm</em></div>
-        <div class="stat">${svg("eye")}<small>Visibility</small><strong>${h.visibility[now] >= 10000 ? "10+" : (h.visibility[now] / 1000).toFixed(1)}</strong> <em>km</em></div>
-      </div>`)
-    + `<div class="card map-card reveal" style="--i:${k++}"><div id="map" role="img" aria-label="Map of your location"></div></div>`;
-  resultEl.hidden = false;
-  setCompact(true);
-  drawMap();
-  countUp();
 }
 
 // Rain bars and a gust line, one column per hour, lined up with the hour chips below.
@@ -176,6 +98,11 @@ function rainChart(h, now) {
     <line class="base" x1="0" x2="${W}" y1="${base}" y2="${base}"/>${bars}
     <polyline class="gl" points="${line}"/><circle class="gd" cx="${x(peak)}" cy="${gy(h.wind_gusts_10m[peak])}" r="3.5"/>
     <text class="rl" x="${x(peak)}" y="${gy(h.wind_gusts_10m[peak]) - 7}">${Math.round(h.wind_gusts_10m[peak])} mph</text></svg>`;
+}
+
+// Verdict level as colour plus a symbol, so it reads without colour vision.
+function lvPill(level, i) {
+  return `<span class="lvp l${level}"${i != null ? ` style="--i:${i}"` : ""} role="img" aria-label="${VERDICT[level].title}">${["✓", "!", "×"][level]}</span>`;
 }
 
 // Verdict level as colour plus a symbol, so it reads without colour vision.
@@ -219,7 +146,7 @@ function reasonList(reasons, empty) {
 }
 
 // Animate score numbers from 0 up to their value.
-function countUp(root = resultEl) {
+function countUp(root = $("panel-body")) {
   const els = root.querySelectorAll(".count");
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return els.forEach((el) => el.textContent = el.dataset.to);
   const start = performance.now() + 500, dur = 900;
@@ -233,46 +160,73 @@ function countUp(root = resultEl) {
   setTimeout(() => els.forEach((el) => el.textContent = el.dataset.to), 500 + dur + 100);
 }
 
-function drawMap() {
-  if (!window.L || !lastCoords) return;
-  if (map) map.remove();
-  map = L.map("map", { zoomControl: false, attributionControl: false, scrollWheelZoom: false, dragging: !L.Browser.mobile })
-    .setView(lastCoords, 13);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
-  L.marker(lastCoords, { icon: L.divIcon({ className: "", html: '<div class="me"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(map);
+// Results of "Safe to ride here?" as cards. `mode` = "bicycle" or "motorbike".
+function hereHtml(data, place, mode) {
+  const h = data.hourly, n = h.time.length, now = Math.min(PAST_HOURS, n - 1);
+  const { level, reasons } = assess(h, mode, now);
+  const levels = h.time.map((_, i) => assess(h, mode, i, 1).level);
+  const win = bestWindow(levels, now);
+  const hhmm = (i) => h.time[i].slice(11, 16);
+  const who = mode === "bicycle" ? "cycle" : "ride your motorbike";
+  const V = VERDICT[level];
+  const text = [`Conditions look fine to ${who}.`, `You can ${who}, but conditions need extra care.`, `We'd advise against choosing to ${who} right now.`][level];
+  let bestHtml;
+  if (!win) bestHtml = `<b>No clear window in the next 12 hours</b><small>Every hour has at least one hazard, so check the reasons below.</small>`;
+  else if (win.start === now) bestHtml = `<b>Good now until ${win.end >= n ? "at least " + hhmm(n - 1) : hhmm(win.end)}</b><small>Clear riding conditions from right now.</small>`;
+  else bestHtml = `<b>Best time to ride: ${hhmm(win.start)}–${win.end >= n ? hhmm(n - 1) + "+" : hhmm(win.end)}</b><small>The longest stretch of clear conditions ahead.</small>`;
+  let k = 0;
+  const card = (cls, inner) => `<div class="card reveal ${cls}" style="--i:${k++}">${inner}</div>`;
+  return card(`verdict ${V.cls}`, `${badge(level)}
+      <div><h2>${V.title}</h2><p>${text}</p><p class="summary">${esc(summarize(h, mode, now, hhmm))}</p>
+        ${place ? `<span class="place">${svg("pin")}${esc(place)}</span>` : ""}
+        <small class="disc">Guidance only: use your own judgement on the road.</small></div>`)
+    + card("", `<h2 class="ch">Ride window</h2>
+      <div class="best"><span class="ico">${svg("clock")}</span><span>${bestHtml}</span></div>
+      <div class="hours-wrap">${rainChart(h, now)}<div class="hours">${h.time.map((_, i) => {
+        const b = wxBits(h, i);
+        return `<div class="hour ${i < now ? "past" : ""} ${i === now ? "now" : ""}" title="${VERDICT[levels[i]].title}: ${WMO[h.weather_code[i]] ?? ""}">
+          <span class="t">${i === now ? "Now" : hhmm(i)}</span>${svg(b.icon)}<b>${b.temp}°</b>${lvPill(levels[i], i)}</div>`;
+      }).join("")}</div></div>
+      <div class="chart-key"><span class="kr">Rain (mm per hour)</span><span class="kg">Gusts (mph)</span><span>Faded = last ${PAST_HOURS} hours</span></div>${legend()}`)
+    + card("", `<h2 class="ch">Risk scores · next 3 hours <a href="#how">How we score</a></h2>${scoreTiles(scores(h, mode, now))}`)
+    + card("", `<h2 class="ch">Why</h2>${reasonList(reasons, "No weather hazards found for the next 3 hours.")}`)
+    + card("quiet", `<h2 class="ch">Right now · ${WMO[h.weather_code[now]] ?? ""}</h2><div class="stats">
+        <div class="stat">${svg("temp")}<small>Air · feels like</small><strong>${Math.round(h.temperature_2m[now])}°</strong> <em>${Math.round(h.apparent_temperature[now])}°</em></div>
+        <div class="stat">${svg("ice")}<small>Road surface</small><strong>${Math.round(h.soil_temperature_0cm[now])}°C</strong></div>
+        <div class="stat">${svg("wind")}<small>Wind · gusts</small><strong>${Math.round(h.wind_speed_10m[now])}</strong> <em>${Math.round(h.wind_gusts_10m[now])} mph from the ${compass(h.wind_direction_10m[now])}</em></div>
+        <div class="stat">${svg("drop")}<small>Rain now · last ${PAST_HOURS}h</small><strong>${h.precipitation[now].toFixed(1)}</strong> <em>${h.precipitation.slice(0, now).reduce((a, b) => a + b, 0).toFixed(1)} mm</em></div>
+        <div class="stat">${svg("eye")}<small>Visibility</small><strong>${h.visibility[now] >= 10000 ? "10+" : (h.visibility[now] / 1000).toFixed(1)}</strong> <em>km</em></div>
+      </div>`);
 }
 
-// "How we decide", written from the same limits the rules use so the two can't drift apart.
+// "How we decide", written from the same limits and tables the rules use so the two can't drift apart.
 function renderHow() {
   const B = LIMITS.bicycle, M = LIMITS.motorbike;
+  const fit = (b, id) => ["✓", "take care", "✗"][SURFACE_FIT[b][id]];
   $("how-body").innerHTML = `
-    <p>Every check looks at the last ${PAST_HOURS} hours, right now and the next 12. The verdict is the worst hazard we find in the next 3 hours, or anywhere along your route at the time you'll be there.</p>
+    <p>Every check looks at the last ${PAST_HOURS} hours, right now and the next 12. The verdict is the worst weather hazard in the next 3 hours, or anywhere along your route at the time you'll be there.</p>
     <h3>The three verdicts</h3>
     <ul><li>${lvPill(0)} <b>Good to go</b>: no hazards found.</li>
       <li>${lvPill(1)} <b>Ride with care</b>: at least one hazard that needs extra care.</li>
       <li>${lvPill(2)} <b>Not advised</b>: at least one hazard we'd avoid riding in.</li></ul>
-    <h3>Limits we use</h3>
-    <table><tr><th></th><th>Bicycle</th><th>Motorbike</th></tr>
+    <h3>Weather limits</h3>
+    <table><tr><th></th><th>Bicycles</th><th>Motorbike</th></tr>
       <tr><td>Take care: gusts from</td><td>${B.gustCare} mph</td><td>${M.gustCare} mph</td></tr>
       <tr><td>Not advised: gusts from</td><td>${B.gustStop} mph</td><td>${M.gustStop} mph</td></tr>
       <tr><td>Take care: rain from</td><td>${B.rainCare} mm/h</td><td>${M.rainCare} mm/h</td></tr>
       <tr><td>Not advised: rain from</td><td>${B.rainStop} mm/h</td><td>${M.rainStop} mm/h</td></tr></table>
-    <p><b>Not advised for both:</b> thunderstorms, snow (falling, or fallen in the last ${PAST_HOURS} hours), freezing rain, road surface at 0°C or below with moisture about, and fog under 200 m.</p>
-    <p><b>Take care for both:</b> road surface at 3°C or below, visibility under 1 km, roads still wet from recent rain, and 30°C or hotter.</p>
+    <p><b>Not advised for everyone:</b> thunderstorms, snow (falling, or in the last ${PAST_HOURS} hours), freezing rain, road surface at 0°C or below with moisture about, fog under 200 m.
+      <b>Take care:</b> road surface at 3°C or below, visibility under 1 km, roads wet from recent rain, 30°C or hotter.</p>
+    <h3>Road and surface grades</h3>
+    <p>Every stretch of a cycle route is graded from OpenStreetMap's road and surface tags.</p>
+    <table><tr><th></th><th>Road</th><th>Gravel</th><th>MTB</th></tr>
+      ${SURFACES.map((x) => `<tr><td><span class="sw" style="display:inline-block;vertical-align:middle;margin-right:6px;background:${x.colour}"></span>${x.name}</td><td>${fit("road", x.id)}</td><td>${fit("gravel", x.id)}</td><td>${fit("mtb", x.id)}</td></tr>`).join("")}</table>
+    <p>Busy roads are A-roads and main B-roads. Grade 1 is compacted or fine gravel; Grade 2 is loose gravel, dirt or rougher farm tracks; Grade 3 is grass, mud, sand or mountain-bike trails.</p>
     <h3>Risk scores, 0 to 10</h3>
-    <ul><li><b>Ice risk</b>: how cold the road surface gets (scoring from 3.5°C down to −1°C) times how much moisture is about: wet roads, snow, frost-forming air or freezing rain. Cold, dry roads score low.</li>
-      <li><b>Soak risk</b> (how wet you'll get): the rain you'd ride through, weighted by its chance. About 1 mm scores 3, 3 mm scores 6, 6 mm or more 8 to 9; downpours add 1.</li>
-      <li><b>Wind risk</b>: your strongest gust against your vehicle's limit. It scores 8 at the "not advised" limit and 10 at 12 mph beyond it.</li></ul>
-    <h3>Routes</h3>
-    <p>We check the weather about every 2.5 miles, for the time you'll reach each point. We add headwinds, crosswinds for motorbikes, and hills, then suggest the earliest departure in the next 12 hours that's about as good as the best.</p>
-    <p>Weather from Open-Meteo, updated hourly. Safe2Ride is guidance only: it can't see the road in front of you.</p>`;
+    <ul><li><b>Ice</b>: how cold the road surface gets (from 3.5°C down to −1°C) times how much moisture is about.</li>
+      <li><b>Soak</b> (how wet you'll get): the rain you'd ride through, weighted by its chance. About 1 mm scores 3, 3 mm scores 6, 6 mm or more 8 to 9.</li>
+      <li><b>Wind</b>: your strongest gust against your vehicle's limit: 8 at the "not advised" limit, 10 at 12 mph beyond it.</li></ul>
+    <h3>Loops and café stops</h3>
+    <p>We try loops in up to six directions, heading out into the wind so it's behind you on the way home, and pick the one that best matches your distance with the fewest busy roads, unsuitable surfaces and retraced roads (and the least climbing if you prefer flat). Cafés come from OpenStreetMap; we pick one near halfway, open when you'd arrive if its hours are known.</p>
+    <p>Safe2Ride is guidance only: it can't see the road in front of you.</p>`;
 }
-renderHow();
-
-function setLoading(on, text) {
-  btn.disabled = on;
-  btn.classList.toggle("loading", on);
-  $("btn-text").textContent = on ? text : (lastData ? "Check again" : "Check my location");
-}
-function setStatus(t) { statusEl.textContent = t; }
-function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }

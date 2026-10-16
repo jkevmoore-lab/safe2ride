@@ -164,6 +164,107 @@ function evaluateDeparture(cps, wx, mode, dep) {
   return { dep, arrive: dep + lastPt.t, level, cost, pts, segs, reasons, scores: sc, headD, tailD, summary };
 }
 
+// --- Cycle routing (BRouter) with road type and surface for every stretch ---------
+
+// Which BRouter profile suits each bike and the rider's filters.
+function cycleProfile(bike, offroad, avoidBusy) {
+  if (bike === "road") return avoidBusy ? "fastbike-verylowtraffic" : "fastbike-lowtraffic";
+  if (bike === "gravel") return offroad ? "gravel" : "trekking";
+  return offroad ? "mtb" : "trekking";
+}
+
+// Route through waypoints [{lat, lon}, …]. `alt` 0–3 asks for an alternative route.
+async function fetchCycleRoute(waypoints, profile, alt = 0) {
+  const lonlats = waypoints.map((w) => `${w.lon.toFixed(6)},${w.lat.toFixed(6)}`).join("|");
+  const res = await fetch(`https://brouter.de/brouter?lonlats=${lonlats}&profile=${profile}&alternativeidx=${alt}&format=geojson`);
+  if (res.status === 403 || res.status === 429) throw new Error("busy");     // the free server's rate limit
+  if (!res.ok) throw new Error(res.status >= 500 || res.status === 400 ? "noroute" : "route " + res.status);
+  const text = await res.text();
+  if (!text.startsWith("{")) throw new Error("noroute");    // BRouter answers errors as plain text
+  return parseBRouter(JSON.parse(text), profile);
+}
+
+function parseBRouter(j, profile) {
+  const f = j.features[0], p = f.properties, g = f.geometry.coordinates;
+  const coords = g.map(([lo, la]) => [la, lo]), ele = g.map((c) => c[2] ?? null);
+  const cumD = [0];
+  for (let i = 1; i < coords.length; i++) cumD.push(cumD[i - 1] + haversine(coords[i - 1], coords[i]));
+  // Each message row describes the stretch ending at its point; give every line segment its row's class.
+  const hdr = p.messages[0], rows = p.messages.slice(1), lonI = hdr.indexOf("Longitude"), latI = hdr.indexOf("Latitude"), tagI = hdr.indexOf("WayTags");
+  const cls = [];
+  let r = 0;
+  for (let i = 1; i < g.length; i++) {
+    const row = rows[Math.min(r, rows.length - 1)];
+    cls.push(classifyWay(row[tagI]));
+    if (r < rows.length && Math.round(g[i][0] * 1e6) === +row[lonI] && Math.round(g[i][1] * 1e6) === +row[latI]) r++;
+  }
+  return { coords, ele, cumD, cumT: p.times.map(Number), distance: cumD[cumD.length - 1], duration: +p["total-time"],
+    climb: +p["filtered ascend"], cls, profile };
+}
+
+// Road and surface classes, from OpenStreetMap tags. Order matters for display.
+const SURFACES = [
+  { id: "quiet", name: "Quiet road", colour: "#2d6a4f" },
+  { id: "path", name: "Cycle path", colour: "#2f7fb8" },
+  { id: "busy", name: "Busy road", colour: "#c4442f" },
+  { id: "g1", name: "Grade 1 · smooth track", colour: "#c08a1e", dash: "8 5" },
+  { id: "g2", name: "Grade 2 · rough track", colour: "#8b5a2b", dash: "4 5" },
+  { id: "g3", name: "Grade 3 · MTB only", colour: "#4a2f17", dash: "1 6" },
+  { id: "unknown", name: "Unknown surface", colour: "#7d8a84", dash: "2 4" },
+];
+const SURFACE = Object.fromEntries(SURFACES.map((s) => [s.id, s]));
+
+function classifyWay(tagStr) {
+  const t = Object.fromEntries((tagStr || "").split(" ").filter((kv) => kv.includes("=")).map((kv) => kv.split(/=(.*)/s).slice(0, 2)));
+  const hw = t.highway || "", sf = t.surface || "", tt = t.tracktype || "", sm = t.smoothness || "", mtb = parseFloat(t["mtb:scale"]);
+  const paved = /^(asphalt|paved|concrete|concrete:plates|concrete:lanes|paving_stones|chipseal|metal|wood)$/.test(sf);
+  if (mtb >= 1 || /^(grass|mud|sand|earth|rock|roots|woodchips|grass_paver|stepping_stones)$/.test(sf)
+    || /^grade[45]$/.test(tt) || /^(very_bad|horrible|very_horrible|impassable)$/.test(sm)) return "g3";
+  if (/^(gravel|dirt|ground|unpaved|pebblestone|unhewn_cobblestone)$/.test(sf) || tt === "grade3" || sm === "bad") return "g2";
+  if (/^(compacted|fine_gravel|sett|cobblestone)$/.test(sf) || (/^grade[12]$/.test(tt) && !paved)) return "g1";
+  if (/^(trunk|trunk_link|primary|primary_link|secondary|secondary_link)$/.test(hw)) return "busy";
+  if (/^(cycleway|path|footway|bridleway|pedestrian|track|steps)$/.test(hw)) return paved || (hw === "cycleway" && !sf) ? "path" : "unknown";
+  return "quiet";
+}
+
+// How suitable each class is for a bike: 0 fine, 1 take care, 2 not suitable.
+const SURFACE_FIT = {
+  road: { quiet: 0, path: 0, busy: 1, g1: 1, g2: 2, g3: 2, unknown: 1 },
+  gravel: { quiet: 0, path: 0, busy: 1, g1: 0, g2: 0, g3: 2, unknown: 1 },
+  mtb: { quiet: 0, path: 0, busy: 1, g1: 0, g2: 0, g3: 0, unknown: 0 },
+};
+
+// Distance per class, plus stretches that don't suit the bike (joined when < 150 m apart).
+function surfaceStats(route, bike) {
+  const metres = Object.fromEntries(SURFACES.map((s) => [s.id, 0]));
+  const fit = SURFACE_FIT[bike] || SURFACE_FIT.mtb, issues = [];
+  route.cls.forEach((c, i) => {
+    const len = route.cumD[i + 1] - route.cumD[i];
+    metres[c] += len;
+    const lvl = fit[c];
+    if (!lvl) return;
+    const last = issues[issues.length - 1];
+    if (last && last.cls === c && route.cumD[i] - last.end < 150) { last.end = route.cumD[i + 1]; last.len += len; }
+    else issues.push({ cls: c, level: lvl, start: route.cumD[i], end: route.cumD[i + 1], len });
+  });
+  const total = route.distance || 1;
+  return { metres, pct: Object.fromEntries(Object.entries(metres).map(([k, v]) => [k, 100 * v / total])),
+    issues: issues.filter((x) => x.len >= 100).sort((a, b) => b.level - a.level || b.len - a.len) };
+}
+
+function haversine([la1, lo1], [la2, lo2]) {
+  const r = Math.PI / 180, a = Math.sin((la2 - la1) * r / 2) ** 2 + Math.cos(la1 * r) * Math.cos(la2 * r) * Math.sin((lo2 - lo1) * r / 2) ** 2;
+  return 12742000 * Math.asin(Math.sqrt(a));
+}
+
+// The point `dist` metres from (lat, lon) on a compass bearing.
+function destPoint(lat, lon, brg, dist) {
+  const r = Math.PI / 180, d = dist / 6371000, b = brg * r, la = lat * r, lo = lon * r;
+  const la2 = Math.asin(Math.sin(la) * Math.cos(d) + Math.cos(la) * Math.sin(d) * Math.cos(b));
+  const lo2 = lo + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(la), Math.cos(d) - Math.sin(la) * Math.sin(la2));
+  return { lat: la2 / r, lon: lo2 / r };
+}
+
 // Leave now, then on each hour for the next 12 hours (as far as the forecast reaches).
 function planDepartures(cps, wx, mode, now) {
   const end = wx[0].time[wx[0].time.length - 1] + 3600, ride = cps[cps.length - 1].t;
