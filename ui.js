@@ -471,7 +471,6 @@ function describe(o, title, backWord) {
     const c = trip.cafes.length;
     parts.push(c ? `${c} café${c > 1 ? "s" : ""} on the way: tap ☕ on the map.` : trip.option.cafeError ? "Café search isn't responding right now." : "No cafés right on the route.");
   }
-  if (trip.option.detours?.length) parts.push(`Includes a short detour to ${esc(trip.option.detours.map((d) => d.why).join(", "))}.`);
   return parts.join(" ");
 }
 

@@ -118,10 +118,46 @@ test("surface stats join nearby problem stretches", () => {
   assert.equal(S.surfaceStats(r, "mtb").issues.length, 0);
 });
 test("bike profiles", () => {
-  assert.equal(S.cycleProfile("road", true, true), "fastbike-verylowtraffic");
+  assert.equal(S.cycleProfile("road", true, true), "road");
+  assert.equal(S.cycleProfile("road", false, false), "road-lowtraffic");
   assert.equal(S.cycleProfile("gravel", true, true), "gravel");
   assert.equal(S.cycleProfile("mtb", false, true), "trekking");
 });
+
+// Road bikes: our profile is uploaded once, re-uploaded when BRouter has dropped it, and BRouter's own is the fallback.
+{
+  const saved = globalThis.fetch, asked = [];
+  const geo = JSON.stringify({ features: [{ properties: { messages: [["Longitude", "Latitude", "WayTags"], ["-1390000", "51700000", "highway=residential"]], times: [0, 60], "total-time": "60", "filtered ascend": "0" },
+    geometry: { coordinates: [[-1.4, 51.7, 0], [-1.39, 51.7, 0]] } }] });
+  let uploads = 0, expired = false, island = false;
+  globalThis.location = { href: "https://safe2ride.co.uk/" };
+  globalThis.fetch = async (url) => {
+    url = String(url); asked.push(url);
+    if (url.endsWith("profiles/road.brf")) return new Response("# profile");
+    if (url.endsWith("/brouter/profile")) return new Response(JSON.stringify({ profileid: `custom_${++uploads}` }));
+    const custom = /profile=custom_/.test(url);
+    if (custom && expired) { expired = false; return new Response("", { status: 500 }); }
+    if (custom && island) return new Response("target island detected for section 1", { status: 500 });
+    return new Response(geo);
+  };
+  const wps = [{ lat: 51.7, lon: -1.4 }, { lat: 51.7, lon: -1.39 }];
+  const last = () => asked.at(-1).match(/profile=([^&]+)(&profile:consider_traffic=[\d.]+)?/).slice(1).join("");
+  await S.fetchCycleRoute(wps, "road"); const first = last();
+  await S.fetchCycleRoute(wps, "road-lowtraffic"); const second = last();
+  expired = true; await S.fetchCycleRoute(wps, "road"); const afterExpiry = last();
+  island = true; const r = await S.fetchCycleRoute(wps, "road"); const fallback = last();
+  await S.fetchCycleRoute(wps, "trekking"); const other = last();
+  globalThis.fetch = saved; delete globalThis.location;
+  test("road bikes use our own profile, re-uploaded when it expires, with BRouter's as a fallback", () => {
+    assert.equal(first, "custom_1&profile:consider_traffic=1");
+    assert.equal(second, "custom_1&profile:consider_traffic=0.5");
+    assert.equal(afterExpiry, "custom_2&profile:consider_traffic=1");
+    assert.equal(uploads, 2);
+    assert.equal(fallback, "fastbike-verylowtraffic");
+    assert.equal(r.profile, "road");
+    assert.equal(other, "trekking");
+  });
+}
 
 console.log("Loops");
 test("loop waypoints start and end at home, far point in the chosen direction", () => {
@@ -143,9 +179,9 @@ test("a stop goes between the waypoints either side of it", () => {
   assert.deepEqual(S.insertStop(wps, route, { lat: 0.01, lon: 2 }).map((w) => w.lon), [0, 1, 2, 3]);
 });
 
-console.log("Dog legs and cafés");
+console.log("Out-and-back stretches and cafés");
 const path = (pts) => { const cumD = [0]; for (let i = 1; i < pts.length; i++) cumD.push(cumD[i - 1] + S.haversine(pts[i - 1], pts[i])); return { coords: pts, cumD, cumT: cumD.map((d) => d / 5), distance: cumD.at(-1) }; };
-test("a dog leg off a square loop is found; the loop itself isn't", () => {
+test("an out-and-back off a square loop is found; the loop itself isn't", () => {
   const A = [51.70, -1.40], B = [51.73, -1.40], C = [51.73, -1.35], D = [51.70, -1.35], tip = [51.745, -1.375], mid = [51.73, -1.375];
   assert.equal(S.findSpurs(path([A, B, C, D, A])).length, 0);
   const sp = S.findSpurs(path([A, B, mid, tip, mid, C, D, A]));

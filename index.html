@@ -121,6 +121,8 @@
   .grab { flex: none; display: grid; place-items: center; height: 28px; cursor: grab; touch-action: none; }
   .grab span { width: 44px; height: 5px; border-radius: 999px; background: var(--line); }
   .panel-scroll { flex: 1; overflow-y: auto; padding: 0 14px calc(24px + env(safe-area-inset-bottom, 0px)); overscroll-behavior: contain; }
+  /* Half open, the bottom 45% of the sheet is below the screen: leave that much room so the last items can scroll into view */
+  .panel[data-state="half"] .panel-scroll { padding-bottom: calc(45dvh - 31.5px + 24px + env(safe-area-inset-bottom, 0px)); }
   #status { margin: 0 2px 10px; color: var(--muted); font-weight: 600; }
   #status:empty { display: none; }
   #status.error { color: var(--stop-text); }
@@ -137,7 +139,7 @@
     .top.collapsed .search { display: grid; } .top.collapsed .search-mini { display: none; }
     .panel { position: static; flex: 1; min-height: 0; height: auto; transform: none !important; border-radius: 0; box-shadow: none; background: transparent; }
     .grab { display: none; }
-    .panel-scroll { padding-top: 12px; }
+    .panel-scroll, .panel[data-state="half"] .panel-scroll { padding-top: 12px; padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
     .fab { bottom: 20px; right: 20px; }
   }
 
@@ -381,11 +383,11 @@
 <button type="button" class="fab" id="here-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span>Safe to ride here?</span></button>
 
 <script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
-<script src="logic.js?v=202610161739"></script>
-<script src="api.js?v=202610161739"></script>
-<script src="route.js?v=202610161739"></script>
-<script src="loop.js?v=202610161739"></script>
-<script src="app.js?v=202610161739"></script>
-<script src="ui.js?v=202610161739"></script>
+<script src="logic.js?v=202610162203"></script>
+<script src="api.js?v=202610162203"></script>
+<script src="route.js?v=202610162203"></script>
+<script src="loop.js?v=202610162203"></script>
+<script src="app.js?v=202610162203"></script>
+<script src="ui.js?v=202610162203"></script>
 </body>
 </html>

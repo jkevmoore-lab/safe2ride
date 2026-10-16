@@ -150,7 +150,7 @@ function loopWaypoints(start, length, brg) {
   return [start, ...[back + 90, back + 180, back + 270].map((b) => destPoint(c.lat, c.lon, b % 360, r)), start];
 }
 
-// Out-and-back "dog legs": where the route rides back over road it covered shortly before.
+// Out-and-back stretches: where the route rides back over road it covered shortly before.
 // Returns [{ start, end, apex }] in metres along the route (the loop's own start/finish road is ignored).
 function findSpurs(route) {
   const cells = new Map(), hits = [], maxGap = Math.min(8000, route.distance * 0.4);
@@ -169,44 +169,27 @@ function findSpurs(route) {
   return spurs.filter((x) => x.end - x.start >= 300).map((x) => ({ ...x, apex: pointAt(route, (x.start + x.end) / 2) }));
 }
 
-// Things worth a detour near each point (viewpoints, historic sites, attractions, cafés), from OpenStreetMap.
-// Fails quietly to [] so a busy server just means "nothing special here".
-async function interestNear(points, radius = 300) {
-  if (!points.length) return [];
-  const around = points.map((p) => `(around:${radius},${p.lat.toFixed(5)},${p.lon.toFixed(5)})`);
-  const q = `[out:json][timeout:15];(${around.map((a) => `node["tourism"~"viewpoint|attraction"]${a};node["historic"~"castle|ruins|monument|archaeological_site|manor|abbey|memorial"]${a};node["amenity"="cafe"]${a};`).join("")});out 50;`;
-  for (const url of OVERPASS) {
-    try {
-      const res = await fetch(`${url}?data=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(8000) });
-      if (res.ok) return (await res.json()).elements.map((e) => ({ lat: e.lat, lon: e.lon, name: e.tags?.name || e.tags?.tourism || e.tags?.historic || "café" }));
-    } catch { /* next mirror */ }
-  }
-  return [];
-}
-
-// Move the waypoint that caused each pointless dog leg back to where the spur leaves the loop, and re-route.
+// Move the waypoint that causes each out-and-back stretch to where the stretch leaves the loop (or drop it), and re-route.
 // One fix at a time, re-checking the new route each time (positions shift after every re-route).
 async function removeSpurs(cand, target, bike, opts, wind, profile) {
-  let pois = null;
-  const kept = (cand.detours ||= []);
-  for (let round = 0; round < 2; round++) {
-    const spurs = findSpurs(cand.route).filter((x) => !kept.some((d) => haversine([d.apex.lat, d.apex.lon], [x.apex.lat, x.apex.lon]) < 200))
-      .sort((a, b) => (b.end - b.start) - (a.end - a.start));
+  for (let round = 0; round < 3; round++) {
+    const spurs = findSpurs(cand.route).sort((a, b) => (b.end - b.start) - (a.end - a.start));
     if (!spurs.length) return;
-    pois ||= await interestNear(spurs.map((x) => x.apex));
     let improved = false;
-    for (const spur of spurs) {
-      const worthIt = pois.find((p) => haversine([p.lat, p.lon], [spur.apex.lat, spur.apex.lon]) < 350);
-      if (worthIt) { kept.push({ ...spur, why: worthIt.name }); continue; }
+    for (const spur of spurs.slice(0, 2)) {
       const near = cand.waypoints.map((w, i) => ({ i, d: haversine([w.lat, w.lon], [spur.apex.lat, spur.apex.lon]) }))
         .slice(1, -1).sort((a, b) => a.d - b.d)[0];
       if (!near || near.d > (spur.end - spur.start) / 2 + 300) continue;
       const base = pointAt(cand.route, spur.start);
-      try {
-        const wps = cand.waypoints.map((p, i) => (i === near.i ? { lat: base.lat, lon: base.lon } : p));
-        const route = await fetchCycleRoute(wps, profile), score = scoreLoop(route, target, bike, opts, wind);
-        if (score.total < cand.score.total) { Object.assign(cand, { route, waypoints: wps, score }); improved = true; break; }
-      } catch (e) { if (e.message === "busy") return; }
+      const variants = [cand.waypoints.map((p, i) => (i === near.i ? { lat: base.lat, lon: base.lon } : p))];
+      if (cand.waypoints.length > 4) variants.push(cand.waypoints.filter((p, i) => i !== near.i));
+      for (const wps of variants) {
+        try {
+          const route = await fetchCycleRoute(wps, profile), score = scoreLoop(route, target, bike, opts, wind);
+          if (score.total < cand.score.total) { Object.assign(cand, { route, waypoints: wps, score }); improved = true; break; }
+        } catch (e) { if (e.message === "busy") return; }
+      }
+      if (improved) break;
     }
     if (!improved) return;
   }
@@ -265,7 +248,7 @@ function scoreLoop(route, target, bike, opts, wind) {
     busy: (opts.avoidBusy ? 0.6 : 0.2) * st.pct.busy,           // 10% busy = 6 (when avoiding)
     surface: 0.5 * care + 8 * bad,                              // unsuitable surfaces weigh heavily: 1% = 8
     overlap: 0.3 * overlapPct(route),
-    spurs: 300 * findSpurs(route).reduce((s, x) => s + x.end - x.start, 0) / route.distance,   // dog legs: 5% of the ride = 15
+    spurs: 600 * findSpurs(route).reduce((s, x) => s + x.end - x.start, 0) / route.distance,   // out-and-back: 5% of the ride = 30
     wind: Math.max(0, home) * 0.6 - Math.max(0, out) * 0.2,     // headwind home costs; headwind out is welcome
     hills: (opts.flat ? 0.4 : 0.05) * climbPerMile,
   };
@@ -280,7 +263,7 @@ async function planLoop(start, miles, bike, opts, wind, progress = () => {}) {
   const tried = [];
   for (let k = 0; k < headings.length; k++) {
     const brg = headings[k];
-    progress(k < 4 ? `Trying loop ${k + 1} of 4…` : "Looking for quieter roads…");
+    progress(k < 4 ? `Planning loop ${k + 1} of 4…` : "Looking for quieter roads…");
     try {
       let wps = loopWaypoints(start, target, brg), route = await fetchCycleRoute(wps, profile);
       if (Math.abs(route.distance - target) / target > 0.1) {
@@ -312,10 +295,10 @@ async function planLoop(start, miles, bike, opts, wind, progress = () => {}) {
     if (fixed) Object.assign(cand, fixed);
   }
   tried.sort((a, b) => a.score.total - b.score.total);
-  // Dog legs: keep them only when they lead somewhere worth seeing.
+  // Out-and-back stretches: the point of a loop is not to ride the same road twice.
   for (const cand of tried.slice(0, 2)) {
     if (!findSpurs(cand.route).length) continue;
-    progress("Smoothing out dog legs…");
+    progress("Avoiding riding the same road twice…");
     await removeSpurs(cand, target, bike, opts, wind, profile);
   }
   tried.sort((a, b) => a.score.total - b.score.total);

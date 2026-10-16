@@ -83,24 +83,57 @@ function forecastHoursFor(route) { return Math.min(96, 14 + Math.ceil(route.dura
 
 // --- Cycle routing (BRouter) with road type and surface for every stretch ---------
 
-// Which BRouter profile suits each bike and the rider's filters.
+// Which BRouter profile suits each bike and the rider's filters. Road bikes get our own ("road", "road-lowtraffic").
 function cycleProfile(bike, offroad, avoidBusy) {
-  if (bike === "road") return avoidBusy ? "fastbike-verylowtraffic" : "fastbike-lowtraffic";
+  if (bike === "road") return avoidBusy ? "road" : "road-lowtraffic";
   if (bike === "gravel") return offroad ? "gravel" : "trekking";
   return offroad ? "mtb" : "trekking";
 }
 
+// Our road profile (profiles/road.brf) is BRouter's fastbike-verylowtraffic with footpaths, bridleways and
+// unsealed ways ruled out. BRouter only keeps uploaded profiles for a while: upload once per visit, and again if it's gone.
+const ROAD_PROFILES = { road: { traffic: 1, stock: "fastbike-verylowtraffic" }, "road-lowtraffic": { traffic: 0.5, stock: "fastbike-lowtraffic" } };
+let roadProfileId = null;
+function uploadRoadProfile() {
+  roadProfileId ||= (async () => {
+    const brf = await (await fetch(new URL("profiles/road.brf", location.href), { cache: "no-cache" })).text();
+    const j = await (await fetch("https://brouter.de/brouter/profile", { method: "POST", body: brf })).json();
+    if (j.error || !j.profileid) throw new Error("profile");
+    return j.profileid;
+  })().catch((e) => { roadProfileId = null; throw e; });
+  return roadProfileId;
+}
+
 // Route through waypoints [{lat, lon}, …]. `alt` 0–3 asks for an alternative route.
-let routeCalls = 0;   // diagnostics: how many routing requests a plan made
 async function fetchCycleRoute(waypoints, profile, alt = 0) {
+  const road = ROAD_PROFILES[profile];
+  if (!road) return parseBRouter(await brouter(waypoints, profile, alt), profile);
+  // Fall back to BRouter's own road profile if ours can't be uploaded, or can't reach a waypoint
+  // (one that lands on a scrap of road cut off by the paths it won't use).
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let id;
+    try { id = await uploadRoadProfile(); } catch { break; }
+    try { return parseBRouter(await brouter(waypoints, `${id}&profile:consider_traffic=${road.traffic}`, alt), profile); }
+    catch (e) {
+      if (e.message === "gone") { roadProfileId = null; continue; }
+      if (e.message !== "noroute") throw e;
+      break;
+    }
+  }
+  return parseBRouter(await brouter(waypoints, road.stock, alt), profile);
+}
+
+let routeCalls = 0;   // diagnostics: how many routing requests a plan made
+async function brouter(waypoints, profile, alt) {
   routeCalls++;
   const lonlats = waypoints.map((w) => `${w.lon.toFixed(6)},${w.lat.toFixed(6)}`).join("|");
   const res = await fetch(`https://brouter.de/brouter?lonlats=${lonlats}&profile=${profile}&alternativeidx=${alt}&format=geojson`);
   if (res.status === 403 || res.status === 429) throw new Error("busy");     // the free server's rate limit
-  if (!res.ok) throw new Error(res.status >= 500 || res.status === 400 ? "noroute" : "route " + res.status);
   const text = await res.text();
+  if (res.status === 500 && !text && profile.startsWith("custom_")) throw new Error("gone");   // our uploaded profile has expired
+  if (!res.ok) throw new Error(res.status >= 500 || res.status === 400 ? "noroute" : "route " + res.status);
   if (!text.startsWith("{")) throw new Error("noroute");    // BRouter answers errors as plain text
-  return parseBRouter(JSON.parse(text), profile);
+  return JSON.parse(text);
 }
 
 function parseBRouter(j, profile) {
@@ -148,7 +181,7 @@ function classifyWay(tagStr) {
 
 // How suitable each class is for a bike: 0 fine, 1 take care, 2 not suitable.
 const SURFACE_FIT = {
-  road: { quiet: 0, path: 0, busy: 1, g1: 1, g2: 2, g3: 2, unknown: 1 },
+  road: { quiet: 0, path: 0, busy: 1, g1: 2, g2: 2, g3: 2, unknown: 2 },
   gravel: { quiet: 0, path: 0, busy: 1, g1: 0, g2: 0, g3: 2, unknown: 1 },
   mtb: { quiet: 0, path: 0, busy: 1, g1: 0, g2: 0, g3: 0, unknown: 0 },
 };
