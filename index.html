@@ -292,7 +292,9 @@
   .wa i { font-style: normal; }
   .w0 { color: var(--muted); } .w1 { color: var(--moss); } .w2 { color: var(--care); } .w3 { color: var(--stop); }
   .cps .wa svg { width: 16px; height: 16px; }
-  .pin-start { width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 4px solid #2d6a4f; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+  /* Start: a big ring that stays on top of weather tags and café pins */
+  .maplibregl-marker.pin-start { z-index: 5; }
+  .pin-start { width: 28px; height: 28px; border-radius: 50%; background: #a4d65e; border: 5px solid #14382b; box-shadow: 0 0 0 3px #fff, 0 2px 6px rgba(0,0,0,.35); }
   .pin-end { width: 18px; height: 18px; border-radius: 5px; background: #14382b; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
   .pin-cafe { width: 32px; height: 32px; border-radius: 50%; background: #fff; border: 2px solid #8a5300; display: grid; place-items: center; font-size: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.3); cursor: pointer; }
   .pin-cafe.chain { width: 26px; height: 26px; font-size: 13px; border-color: #9aa59f; opacity: .9; }
@@ -383,11 +385,11 @@
 <button type="button" class="fab" id="here-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span>Safe to ride here?</span></button>
 
 <script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
-<script src="logic.js?v=202610162203"></script>
-<script src="api.js?v=202610162203"></script>
-<script src="route.js?v=202610162203"></script>
-<script src="loop.js?v=202610162203"></script>
-<script src="app.js?v=202610162203"></script>
-<script src="ui.js?v=202610162203"></script>
+<script src="logic.js?v=202610162240"></script>
+<script src="api.js?v=202610162240"></script>
+<script src="route.js?v=202610162240"></script>
+<script src="loop.js?v=202610162240"></script>
+<script src="app.js?v=202610162240"></script>
+<script src="ui.js?v=202610162240"></script>
 </body>
 </html>

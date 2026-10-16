@@ -36,10 +36,27 @@ const mapReady = new Promise((resolve) => map.on("load", () => {
     paint: { "line-color": ["get", "colour"], "line-width": 6 } }, firstLabel);
   for (const [k, arr] of Object.entries(DASH)) map.addLayer({ id: `route-${k}`, type: "line", source: "route", filter: ["==", ["get", "dash"], k],
     layout: { "line-cap": k === "g3" ? "round" : "butt", "line-join": "round" }, paint: { "line-color": ["get", "colour"], "line-width": 6, "line-dasharray": arr } }, firstLabel);
+  // Direction of travel: white chevrons along the route.
+  map.addSource("route-dir", { type: "geojson", data: empty });
+  map.addImage("chevron", chevron(), { pixelRatio: 2 });
+  map.addLayer({ id: "route-dir", type: "symbol", source: "route-dir",
+    layout: { "symbol-placement": "line", "symbol-spacing": 60, "icon-image": "chevron", "icon-rotation-alignment": "map",
+      "icon-allow-overlap": true, "icon-ignore-placement": true }, paint: { "icon-opacity": 0.95 } }, firstLabel);
   [...ROUTE_LAYERS, "alts"].forEach((id) => { map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer")); map.on("mouseleave", id, () => (map.getCanvas().style.cursor = "")); });
   resolve();
 }));
 map.on("zoomend", layoutChips);
+
+// A chevron pointing along the line (east = forwards), drawn at 2× for sharp screens.
+function chevron() {
+  const s = 40, c = document.createElement("canvas"); c.width = c.height = s;
+  const g = c.getContext("2d");
+  g.lineCap = g.lineJoin = "round";
+  g.beginPath(); g.moveTo(13, 9); g.lineTo(26, 20); g.lineTo(13, 31);
+  g.strokeStyle = "rgba(15,26,21,.6)"; g.lineWidth = 10; g.stroke();
+  g.strokeStyle = "#fff"; g.lineWidth = 5.5; g.stroke();
+  return g.getImageData(0, 0, s, s);
+}
 
 const popup = (html, at, offset = 14) => new maplibregl.Popup({ closeButton: false, maxWidth: "270px", offset }).setLngLat(at).setHTML(html).addTo(map);
 let hoverPop = null;
@@ -95,7 +112,7 @@ function clearMap() {
   chips.forEach((c) => c.marker.remove()); chips = [];
   hoverPop?.remove();
   // Clear now if the map is ready (drawTrip always is), so a new route drawn straight after isn't wiped.
-  const wipe = () => ["route", "alts"].forEach((id) => map.getSource(id)?.setData({ type: "FeatureCollection", features: [] }));
+  const wipe = () => ["route", "route-dir", "alts"].forEach((id) => map.getSource(id)?.setData({ type: "FeatureCollection", features: [] }));
   if (map.getSource("route")) wipe(); else mapReady.then(wipe);
 }
 
@@ -546,6 +563,7 @@ function drawTrip(o, fit) {
     }
   } else feats.push({ type: "Feature", properties: { cls: "quiet", colour: "#2d6a4f", dash: "none" }, geometry: line(coords) });
   map.getSource("route").setData({ type: "FeatureCollection", features: feats });
+  map.getSource("route-dir").setData({ type: "Feature", properties: {}, geometry: line(coords) });
 
   addMarker(div("pin-start"), coords[0][0], coords[0][1], `<b>Start</b><br>${esc(trip.from.name)}`);
   if (trip.ride === "ab") addMarker(div("pin-end"), coords.at(-1)[0], coords.at(-1)[1], `<b>Finish</b><br>${esc(trip.to.name)}`);
