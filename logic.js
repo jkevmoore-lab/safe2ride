@@ -1,12 +1,7 @@
-// Safe2Ride weather logic. No DOM access here so it can be tested on its own.
+// Safe2Ride weather fetching and helpers. No DOM access here so it can be tested on its own.
+// The decision rules (thresholds, verdicts, scores) are in the private Safe2Ride API: see api.js.
 
 const PAST_HOURS = 6, FORECAST_HOURS = 13;
-
-// Thresholds differ by vehicle. Wind values are mph, rain mm/h.
-const LIMITS = {
-  bicycle:   { gustCare: 25, gustStop: 38, windCare: 18, rainCare: 1.0, rainStop: 6 },
-  motorbike: { gustCare: 35, gustStop: 50, windCare: 28, rainCare: 2.0, rainStop: 8 },
-};
 
 const WMO = {
   0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Freezing fog",
@@ -34,64 +29,6 @@ async function fetchPlace(lat, lon) {
   } catch { return ""; }
 }
 
-// Assess riding conditions at hour index `at`, looking `ahead` hours forward
-// and up to PAST_HOURS back. Returns { level: 0 go | 1 care | 2 stop, reasons }.
-function assess(h, mode, at, ahead = 3) {
-  const L = LIMITS[mode];
-  const n = h.time.length;
-  const past = range(Math.max(0, at - PAST_HOURS), at), next = range(at, Math.min(at + ahead, n));
-  const max = (arr, idx) => Math.max(...idx.map((i) => arr[i] ?? 0));
-  const sum = (arr, idx) => idx.reduce((s, i) => s + (arr[i] ?? 0), 0);
-  const min = (arr, idx) => Math.min(...idx.map((i) => arr[i] ?? 99));
-
-  const reasons = [];
-  const add = (level, kind, text) => reasons.push({ level, kind, text });
-
-  const codesAhead = next.map((i) => h.weather_code[i]);
-  const pastRain = sum(h.precipitation, past);
-  const recentRain = sum(h.precipitation, past.slice(-3));
-  const airNow = h.temperature_2m[at];
-  const coldest = Math.min(min(h.soil_temperature_0cm, next), min(h.temperature_2m, next));
-
-  if (codesAhead.some((c) => c >= 95)) add(2, "storm", "Thunderstorms expected in the next few hours.");
-  const snowAhead = sum(h.snowfall, next), snowPast = sum(h.snowfall, past);
-  if (snowAhead > 0) add(2, "snow", `Snow forecast (${snowAhead.toFixed(1)} cm).`);
-  else if (snowPast > 0) add(2, "snow", `Snow has fallen in the last ${PAST_HOURS} hours, so roads may be covered.`);
-
-  if (codesAhead.some((c) => [56, 57, 66, 67].includes(c))) add(2, "ice", "Freezing rain or drizzle forecast: black ice is likely.");
-  if (coldest <= 0 && (pastRain > 0 || h.dew_point_2m[at] >= airNow - 1)) {
-    add(2, "ice", `Road surface around ${coldest.toFixed(0)}°C with moisture about: high risk of ice.`);
-  } else if (coldest <= 3) {
-    add(1, "ice", `Near freezing (${coldest.toFixed(0)}°C). Watch for frost on shaded roads and bridges.`);
-  }
-
-  const gust = max(h.wind_gusts_10m, next), wind = max(h.wind_speed_10m, next);
-  if (gust >= L.gustStop) add(2, "wind", `Gusts up to ${Math.round(gust)} mph: strong enough to push you across the road.`);
-  else if (gust >= L.gustCare || wind >= L.windCare) add(1, "wind", `Windy, with gusts up to ${Math.round(gust)} mph. Take care in exposed spots.`);
-
-  const rainAhead = max(h.precipitation, next);
-  if (rainAhead >= L.rainStop) add(2, "rain", `Heavy rain forecast (up to ${rainAhead.toFixed(1)} mm/h): poor grip and visibility.`);
-  else if (rainAhead >= L.rainCare) add(1, "rain", `Rain forecast (up to ${rainAhead.toFixed(1)} mm/h). Allow longer braking distances.`);
-  else if (rainAhead > 0) add(0, "rain", "Some light rain possible.");
-
-  if (recentRain >= 0.5 && rainAhead < L.rainCare) add(1, "wet", `${recentRain.toFixed(1)} mm of rain in the last 3 hours: roads are likely still wet and slippery.`);
-  else if (pastRain > 0 && recentRain < 0.5) add(0, "wet", `Some rain earlier (${pastRain.toFixed(1)} mm in the last ${PAST_HOURS} hours); roads may be damp in places.`);
-
-  const soak = scores(h, mode, at, ahead).rain;
-  if (soak.score >= 7 && rainAhead < L.rainCare) add(1, "rain", `Showers could add up: ${soak.detail}. You may get soaked.`);
-
-  const vis = min(h.visibility, next);
-  if (vis < 200) add(2, "fog", `Visibility down to ${Math.round(vis)} m (fog).`);
-  else if (vis < 1000) add(1, "fog", `Reduced visibility (${(vis / 1000).toFixed(1)} km). Use lights and be seen.`);
-
-  if (max(h.temperature_2m, next) >= 30) add(1, "heat", "Very hot. Carry water and watch for soft, melting tarmac.");
-
-  if (h.is_day[at] === 0) add(0, "dark", "It's dark: use lights and reflective kit.");
-
-  reasons.sort((a, b) => b.level - a.level);
-  return { level: Math.max(0, ...reasons.map((r) => r.level)), reasons };
-}
-
 // Longest run of "go" hours from `from` onwards. Returns { start, end } (end exclusive) or null.
 function bestWindow(levels, from) {
   let best = null, start = null;
@@ -103,62 +40,6 @@ function bestWindow(levels, from) {
   return best;
 }
 
-// Risk scores 0–10 for the ride window (`ahead` hours from `at`).
-function scores(h, mode, at, ahead = 3) {
-  const n = h.time.length;
-  const past = range(Math.max(0, at - PAST_HOURS), at), next = range(at, Math.min(at + ahead, n));
-  const sum = (arr, idx) => idx.reduce((s, i) => s + (arr[i] ?? 0), 0);
-  const clamp = (x) => Math.max(0, Math.min(10, Math.round(x)));
-
-  // Ice: how cold the surface gets x how much moisture is about.
-  const surface = Math.min(...next.map((i) => Math.min(h.soil_temperature_0cm[i], h.temperature_2m[i])));
-  const cold = Math.max(0, Math.min(1, (3.5 - surface) / 4.5)); // 3.5°C -> 0, -1°C -> 1
-  const codes = next.map((i) => h.weather_code[i]);
-  const pastRain = sum(h.precipitation, past), snow = sum(h.snowfall, past) + sum(h.snowfall, next);
-  const frost = next.some((i) => h.dew_point_2m[i] >= h.temperature_2m[i] - 1);
-  let wet = 0.3, why = "dry roads";
-  if (codes.some((c) => [56, 57, 66, 67].includes(c))) { wet = 1; why = "freezing rain"; }
-  else if (snow > 0) { wet = 1; why = "snow about"; }
-  else if (pastRain >= 0.5 || sum(h.precipitation, next) >= 0.5) { wet = 0.9; why = "wet roads"; }
-  else if (pastRain > 0) { wet = 0.7; why = "damp roads"; }
-  else if (frost) { wet = 0.8; why = "frost-forming air"; }
-  const ice = clamp(10 * cold * wet);
-
-  // Rain: how wet you'd get (expected mm over the window), tempered by how likely it is.
-  const mm = sum(h.precipitation, next);
-  const chance = Math.max(0, ...next.map((i) => h.precipitation_probability?.[i] ?? (h.precipitation[i] > 0 ? 100 : 0)));
-  const peak = Math.max(0, ...next.map((i) => h.precipitation[i]));
-  const rain = soakScore(mm, chance, peak);
-
-  // Wind: strongest gust (or sustained wind x1.4) against the vehicle's limit.
-  const gust = Math.max(...next.map((i) => Math.max(h.wind_gusts_10m[i], h.wind_speed_10m[i] * 1.4)));
-  const wind = windScore(gust, mode);
-
-  return {
-    ice: { score: ice, label: band(ice, ICE_LABELS),
-      detail: `Surface down to ${surface.toFixed(0)}°C, ${why}` },
-    rain: { score: rain, label: band(rain, SOAK_LABELS),
-      detail: mm < 0.1 ? `${Math.round(chance)}% chance · no rain expected` : `${Math.round(chance)}% chance · ~${mm.toFixed(1)} mm expected` },
-    wind: { score: wind, label: band(wind, WIND_LABELS),
-      detail: `Gusts up to ${Math.round(Math.max(...next.map((i) => h.wind_gusts_10m[i])))} mph` },
-  };
-}
-
-const ICE_LABELS = ["Very low", "Low", "Possible", "Likely", "Very likely"];
-const SOAK_LABELS = ["Staying dry", "Might get damp", "Getting wet", "Getting soaked", "Drenched"];
-const WIND_LABELS = ["Calm", "Breezy", "Blustery", "Strong gusts", "Dangerous"];
-
-// How wet you'd get from `mm` of rain, tempered by the chance (%) of it happening.
-function soakScore(mm, chance, peak) {
-  return clamp10(10 * (1 - Math.exp(-mm / 3)) * (0.5 + 0.5 * chance / 100) + (peak >= 4 ? 1 : 0));
-}
-
-// Strongest gust (mph) against the vehicle's limit.
-function windScore(gust, mode) {
-  const stop = LIMITS[mode].gustStop;
-  return clamp10(gust <= stop ? 8 * (gust - 10) / (stop - 10) : 8 + 2 * (gust - stop) / 12);
-}
-
 // What's falling at hour i: null (dry), "rain", "sleet", "snow" or "freezing" (freezing rain/drizzle).
 // Open-Meteo snowfall is cm; 7 cm of snow ≈ 10 mm of water.
 function precipType(h, i) {
@@ -168,33 +49,8 @@ function precipType(h, i) {
   return mm >= 0.1 ? "rain" : null;
 }
 
-// One-line summary of the next `hours` hours from index `now`, e.g.
-// "Dry until 15:00, then rain, gusts to 33 mph around 16:00." `fmt(i)` formats hour i as a time.
-function summarize(h, mode, now, fmt, hours = 12) {
-  const idx = range(now, Math.min(h.time.length, now + hours));
-  const wet = (i) => h.precipitation[i] >= 0.2 || (h.snowfall?.[i] ?? 0) > 0 || precipType(h, i) === "freezing";
-  const fall = (i) => ({ snow: "snow", sleet: "sleet", freezing: "freezing rain" })[precipType(h, i)] || "rain";
-  const parts = [];
-  if (wet(now)) {
-    const stop = idx.find((i) => !wet(i));
-    parts.push(stop === undefined ? `${cap(fall(now))} for the next ${idx.length} hours` : `${cap(fall(now))} until about ${fmt(stop)}`);
-  } else {
-    const start = idx.find(wet);
-    parts.push(start === undefined ? `Dry for the next ${idx.length} hours` : `Dry until about ${fmt(start)}, then ${fall(start)}`);
-  }
-  const g = idx.reduce((a, i) => (h.wind_gusts_10m[i] > h.wind_gusts_10m[a] ? i : a), now);
-  if (h.wind_gusts_10m[g] >= LIMITS[mode].gustCare) parts.push(`gusts to ${Math.round(h.wind_gusts_10m[g])} mph ${g === now ? "now" : "around " + fmt(g)}`);
-  const ice = idx.find((i) => scores(h, mode, i, 1).ice.score >= 4);
-  if (ice !== undefined) parts.push(`ice risk ${ice === now ? "now" : "from about " + fmt(ice)}`);
-  return parts.join(", ") + ".";
-}
-
 function compass(deg) { return ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(deg / 22.5) % 16]; }
 
 function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
-
-function clamp10(x) { return Math.max(0, Math.min(10, Math.round(x))); }
-
-function band(score, labels) { return labels[Math.min(4, Math.floor(score / 2.01))]; }
 
 function range(a, b) { return Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i); }

@@ -160,11 +160,11 @@ function countUp(root = $("panel-body")) {
   setTimeout(() => els.forEach((el) => el.textContent = el.dataset.to), 500 + dur + 100);
 }
 
-// Results of "Safe to ride here?" as cards. `mode` = "bicycle" or "motorbike".
-function hereHtml(data, place, mode) {
+// Results of "Safe to ride here?" as cards. `mode` = "bicycle" or "motorbike";
+// `a` is the API's assessment of this weather (see assessHere in api.js).
+function hereHtml(data, place, mode, a) {
   const h = data.hourly, n = h.time.length, now = Math.min(PAST_HOURS, n - 1);
-  const { level, reasons } = assess(h, mode, now);
-  const levels = h.time.map((_, i) => assess(h, mode, i, 1).level);
+  const { level, reasons, levels } = a;
   const win = bestWindow(levels, now);
   const hhmm = (i) => h.time[i].slice(11, 16);
   const who = mode === "bicycle" ? "cycle" : "ride your motorbike";
@@ -177,7 +177,7 @@ function hereHtml(data, place, mode) {
   let k = 0;
   const card = (cls, inner) => `<div class="card reveal ${cls}" style="--i:${k++}">${inner}</div>`;
   return card(`verdict ${V.cls}`, `${badge(level)}
-      <div><h2>${V.title}</h2><p>${text}</p><p class="summary">${esc(summarize(h, mode, now, hhmm))}</p>
+      <div><h2>${V.title}</h2><p>${text}</p><p class="summary">${esc(a.summary)}</p>
         ${place ? `<span class="place">${svg("pin")}${esc(place)}</span>` : ""}
         <small class="disc">Guidance only: use your own judgement on the road.</small></div>`)
     + card("", `<h2 class="ch">Ride window</h2>
@@ -188,7 +188,7 @@ function hereHtml(data, place, mode) {
           <span class="t">${i === now ? "Now" : hhmm(i)}</span>${svg(b.icon)}<b>${b.temp}°</b>${lvPill(levels[i], i)}</div>`;
       }).join("")}</div></div>
       <div class="chart-key"><span class="kr">Rain (mm per hour)</span><span class="kg">Gusts (mph)</span><span>Faded = last ${PAST_HOURS} hours</span></div>${legend()}`)
-    + card("", `<h2 class="ch">Risk scores · next 3 hours <a href="#how">How we score</a></h2>${scoreTiles(scores(h, mode, now))}`)
+    + card("", `<h2 class="ch">Risk scores · next 3 hours <a href="#how">How we score</a></h2>${scoreTiles(a.scores)}`)
     + card("", `<h2 class="ch">Why</h2>${reasonList(reasons, "No weather hazards found for the next 3 hours.")}`)
     + card("quiet", `<h2 class="ch">Right now · ${WMO[h.weather_code[now]] ?? ""}</h2><div class="stats">
         <div class="stat">${svg("temp")}<small>Air · feels like</small><strong>${Math.round(h.temperature_2m[now])}°</strong> <em>${Math.round(h.apparent_temperature[now])}°</em></div>
@@ -199,9 +199,9 @@ function hereHtml(data, place, mode) {
       </div>`);
 }
 
-// "How we decide", written from the same limits and tables the rules use so the two can't drift apart.
+// "How we decide". The weather thresholds and scoring live in the private Safe2Ride API, so this
+// describes them in words; the surface table is still built from the same tables the routing uses.
 function renderHow() {
-  const B = LIMITS.bicycle, M = LIMITS.motorbike;
   const fit = (b, id) => ["✓", "take care", "✗"][SURFACE_FIT[b][id]];
   $("how-body").innerHTML = `
     <p>Every check looks at the last ${PAST_HOURS} hours, right now and the next 12. The verdict is the worst weather hazard in the next 3 hours, or anywhere along your route at the time you'll be there.</p>
@@ -209,23 +209,18 @@ function renderHow() {
     <ul><li>${lvPill(0)} <b>Good to go</b>: no hazards found.</li>
       <li>${lvPill(1)} <b>Ride with care</b>: at least one hazard that needs extra care.</li>
       <li>${lvPill(2)} <b>Not advised</b>: at least one hazard we'd avoid riding in.</li></ul>
-    <h3>Weather limits</h3>
-    <table><tr><th></th><th>Bicycles</th><th>Motorbike</th></tr>
-      <tr><td>Take care: gusts from</td><td>${B.gustCare} mph</td><td>${M.gustCare} mph</td></tr>
-      <tr><td>Not advised: gusts from</td><td>${B.gustStop} mph</td><td>${M.gustStop} mph</td></tr>
-      <tr><td>Take care: rain from</td><td>${B.rainCare} mm/h</td><td>${M.rainCare} mm/h</td></tr>
-      <tr><td>Not advised: rain from</td><td>${B.rainStop} mm/h</td><td>${M.rainStop} mm/h</td></tr></table>
-    <p><b>Not advised for everyone:</b> thunderstorms, snow (falling, or in the last ${PAST_HOURS} hours), freezing rain, road surface at 0°C or below with moisture about, fog under 200 m.
-      <b>Take care:</b> road surface at 3°C or below, visibility under 1 km, roads wet from recent rain, 30°C or hotter.</p>
+    <h3>What we look for</h3>
+    <p>Gusts and strong wind, rain and how much of it you'd ride through, roads still wet from earlier rain, ice and frost on the road surface, snow, freezing rain, thunderstorms, fog and poor visibility, and extreme heat. Along a route we also look at headwinds, tailwinds and crosswinds for the direction you're riding.</p>
+    <p>Bicycles and motorbikes have their own limits: a gust that's fine on a motorbike can push a bike across the road.</p>
     <h3>Road and surface grades</h3>
     <p>Every stretch of a cycle route is graded from OpenStreetMap's road and surface tags.</p>
     <table><tr><th></th><th>Road</th><th>Gravel</th><th>MTB</th></tr>
       ${SURFACES.map((x) => `<tr><td><span class="sw" style="display:inline-block;vertical-align:middle;margin-right:6px;background:${x.colour}"></span>${x.name}</td><td>${fit("road", x.id)}</td><td>${fit("gravel", x.id)}</td><td>${fit("mtb", x.id)}</td></tr>`).join("")}</table>
     <p>Busy roads are A-roads and main B-roads. Grade 1 is compacted or fine gravel; Grade 2 is loose gravel, dirt or rougher farm tracks; Grade 3 is grass, mud, sand or mountain-bike trails.</p>
     <h3>Risk scores, 0 to 10</h3>
-    <ul><li><b>Ice</b>: how cold the road surface gets (from 3.5°C down to −1°C) times how much moisture is about.</li>
-      <li><b>Soak</b> (how wet you'll get): the rain you'd ride through, weighted by its chance. About 1 mm scores 3, 3 mm scores 6, 6 mm or more 8 to 9.</li>
-      <li><b>Wind</b>: your strongest gust against your vehicle's limit: 8 at the "not advised" limit, 10 at 12 mph beyond it.</li></ul>
+    <ul><li><b>Ice</b>: how cold the road surface gets, and how much moisture is about to freeze on it.</li>
+      <li><b>Soak</b> (how wet you'll get): the rain you'd ride through, weighted by how likely it is.</li>
+      <li><b>Wind</b>: your strongest gust against your vehicle's limit.</li></ul>
     <h3>Loops and café stops</h3>
     <p>We try loops in up to six directions, heading out into the wind so it's behind you on the way home, and pick the one that best matches your distance with the fewest busy roads, unsuitable surfaces and retraced roads (and the least climbing if you prefer flat). Cafés come from OpenStreetMap; we pick one near halfway, open when you'd arrive if its hours are known.</p>
     <p>Safe2Ride is guidance only: it can't see the road in front of you.</p>`;

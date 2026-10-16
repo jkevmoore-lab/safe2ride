@@ -2,8 +2,8 @@
 import fs from "fs";
 import assert from "assert/strict";
 
-const src = ["logic.js", "route.js", "loop.js"].map((f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
-const S = new Function(src + "; return { findSpurs, isChain, cafesOnRoute, openAt, classifyWay, surfaceStats, loopWaypoints, overlapPct, insertStop, haversine, destPoint, fetchCycleRoute, cycleProfile, planLoop, addCafeStop, summarize, withPlace, climbStats, fetchElevation, pointAt, precipType, compass, assess, scores, bestWindow, soakScore, windScore, makeCheckpoints, evaluateDeparture, planDepartures, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE };")();
+const src = ["logic.js", "route.js", "loop.js", "api.js"].map((f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
+const S = new Function(src + "; return { findSpurs, isChain, cafesOnRoute, openAt, classifyWay, surfaceStats, loopWaypoints, overlapPct, insertStop, haversine, destPoint, fetchCycleRoute, cycleProfile, planLoop, addCafeStop, climbStats, fetchElevation, pointAt, precipType, compass, bestWindow, makeCheckpoints, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE, bestWindow, assessRoute };")();
 
 // Browsers send a User-Agent automatically; Node doesn't, and some map services require one.
 const realFetch = globalThis.fetch;
@@ -22,20 +22,7 @@ function hours(over = {}, n = 30, t0 = 1_800_000_000) {
   return h;
 }
 
-console.log("Scores");
-test("calm mild dry is all zero", () => {
-  const s = S.scores(hours(), "bicycle", 6);
-  assert.deepEqual([s.ice.score, s.rain.score, s.wind.score], [0, 0, 0]);
-});
-test("frosty night scores high ice and stops", () => {
-  const h = hours({ temperature_2m: -1, soil_temperature_0cm: -2, dew_point_2m: -1.5 });
-  assert.ok(S.scores(h, "bicycle", 6).ice.score >= 7);
-  assert.equal(S.assess(h, "bicycle", 6).level, 2);
-});
-test("drizzle at 90% is not a soaking", () => assert.ok(S.soakScore(0.3, 90, 0.1) <= 2));
-test("5 mm/h downpour is drenched", () => assert.ok(S.soakScore(15, 95, 5) >= 9));
-test("wind limits differ by vehicle", () => assert.ok(S.windScore(30, "bicycle") > S.windScore(30, "motorbike")));
-
+console.log("Weather helpers");
 test("rain, sleet, snow and freezing rain are told apart", () => {
   const at = (o) => S.precipType(hours(o), 6);
   assert.equal(at({}), null);
@@ -47,18 +34,6 @@ test("rain, sleet, snow and freezing rain are told apart", () => {
 });
 test("compass points", () => assert.deepEqual([0, 90, 225, 350].map(S.compass), ["N", "E", "SW", "N"]));
 
-test("summary: dry, then rain, with gusts", () => {
-  const h = hours({ precipitation: (v, i) => (i >= 9 ? 1.5 : 0), wind_gusts_10m: (v, i) => (i === 8 ? 33 : 12) });
-  assert.equal(S.summarize(h, "bicycle", 6, (i) => `h${i}`), "Dry until about h9, then rain, gusts to 33 mph around h8.");
-});
-test("summary: raining now, stops later", () => {
-  const h = hours({ precipitation: (v, i) => (i <= 7 ? 2 : 0) });
-  assert.equal(S.summarize(h, "bicycle", 6, (i) => `h${i}`), "Rain until about h8.");
-});
-test("hazard comes before the place", () => {
-  assert.equal(S.withPlace("Rain forecast (up to 2.0 mm/h). Allow longer braking distances.", "at the end"), "Rain forecast (up to 2.0 mm/h) at the end. Allow longer braking distances.");
-  assert.equal(S.withPlace("Gusts up to 40 mph: strong enough.", "around mile 5"), "Gusts up to 40 mph around mile 5: strong enough.");
-});
 test("climb stats", () => assert.deepEqual(S.climbStats([100, 120, 110, 150]), { up: 60, down: 10, min: 100, max: 150 }));
 
 console.log("Route maths");
@@ -78,33 +53,29 @@ test("checkpoints span the route", () => {
   assert.ok(Math.abs(cps[cps.length - 1].dist - route.distance) < 1);
   assert.ok(Math.abs(cps[cps.length - 1].t - 2400) < 1);
 });
-test("easterly wind riding east is a headwind", () => {
-  const wx = cps.map(() => hours({ wind_speed_10m: 16, wind_gusts_10m: 22, wind_direction_10m: 90 }));
-  const e = S.evaluateDeparture(cps, wx, "bicycle", t0 + 6 * 3600);
-  assert.ok(e.segs.every((g) => g.head > 15));
-  assert.ok(e.reasons.some((r) => r.kind === "headwind" && r.level === 1));
-});
-test("westerly wind riding east is a tailwind", () => {
-  const wx = cps.map(() => hours({ wind_speed_10m: 12, wind_direction_10m: 270 }));
-  const e = S.evaluateDeparture(cps, wx, "bicycle", t0 + 6 * 3600);
-  assert.ok(e.reasons.some((r) => r.kind === "tailwind"));
-});
-test("rain only at the far end is located and timed", () => {
-  const wx = cps.map((_, k) => hours(k === cps.length - 1 ? { precipitation: 3, precipitation_probability: 90, weather_code: 63 } : {}));
-  const e = S.evaluateDeparture(cps, wx, "bicycle", t0 + 6 * 3600);
-  const rain = e.reasons.find((r) => r.kind === "rain");
-  assert.ok(rain && rain.text.includes("at the end"), rain?.text);
-});
-test("best departure avoids a shower", () => {
-  // Rain everywhere for hours 6–8, dry afterwards.
-  const wx = cps.map(() => hours({ precipitation: (v, i) => (i >= 6 && i <= 8 ? 4 : 0), precipitation_probability: (v, i) => (i >= 6 && i <= 8 ? 90 : 0) }));
-  const plan = S.planDepartures(cps, wx, "bicycle", t0 + 6 * 3600);
-  const best = plan.options[plan.best];
-  assert.ok(best.dep >= t0 + 9 * 3600, `best leaves at hour ${(best.dep - t0) / 3600}`);
-  assert.equal(best.level, 0);
-  assert.ok(plan.options[0].level >= 1);
-});
 
+// The API call for a route (api.js), with the Worker faked: what's sent, and how the reply is joined back up.
+{
+  const fake = { best: 0, options: [{ dep: t0, arrive: t0 + 2400, level: 1, reasons: [], scores: {}, summary: "",
+    pts: cps.map((c) => ({ at: 6, eta: t0 + c.t, level: 1 })), segs: cps.slice(1).map(() => ({ head: 3 })) }] };
+  const saved = globalThis.fetch;
+  let sent;
+  globalThis.fetch = async (url, init) => { sent = { url, ...JSON.parse(init.body) }; return new Response(JSON.stringify(fake)); };
+  const wx = cps.map((_, k) => ({ time: [k] }));
+  const plan = await S.assessRoute(cps, wx, "bicycle", t0);
+  globalThis.fetch = saved;
+  test("route check sends the weather and checkpoints, and joins the reply back up", () => {
+    assert.match(sent.url, /\/assess\/route$/);
+    assert.deepEqual(Object.keys(sent.cps[0]), ["lat", "lon", "t", "dist"]);
+    assert.equal(typeof sent.tz, "string");
+    const o = plan.options[0];
+    assert.equal(o.pts[2].h, wx[2]);
+    assert.equal(o.pts[2].lat, cps[2].lat);
+    assert.equal(o.pts[2].level, 1);
+    assert.equal(o.segs[1].from, o.pts[1]);
+    assert.equal(o.segs[1].to, o.pts[2]);
+  });
+}
 console.log("Opening hours");
 const at = (d, hm) => new Date(`2026-10-${d}T${hm}:00`);   // 12 Oct 2026 is a Monday
 test("simple daily hours", () => {
@@ -200,7 +171,7 @@ if (process.argv.includes("--live")) {
     const r = await S.fetchRoute({ lat: 51.7856, lon: -1.4857 }, places[0], mode);
     const c = S.makeCheckpoints(r);
     const wx = await S.fetchRouteWeather(c, S.forecastHoursFor(r));
-    const plan = S.planDepartures(c, wx, mode, Math.floor(Date.now() / 1000));
+    const plan = await S.assessRoute(c, wx, mode, Math.floor(Date.now() / 1000));
     const elev = await S.fetchElevation(r);
     console.log(`    climb: ${JSON.stringify(S.climbStats(elev.z))}`);
     const b = plan.options[plan.best];
