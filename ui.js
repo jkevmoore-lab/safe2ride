@@ -1,41 +1,76 @@
 // Safe2Ride map-first interface: map, search card, filters, results panel. Uses app.js, route.js and loop.js.
 
-const OSM = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const BIKE_NAME = { road: "road bike", gravel: "gravel bike", mtb: "mountain bike", motorbike: "motorbike" };
 const HAZARD_WORD = { storm: "Storms", snow: "Snow", ice: "Ice", wind: "Wind", crosswind: "Wind", headwind: "Headwind",
   rain: "Rain", soak: "Rain", wet: "Wet roads", fog: "Fog", heat: "Heat", dark: "Dark" };
 const ISSUE_NAME = { busy: "busy road", g1: "smooth track (Grade 1)", g2: "rough track (Grade 2)", g3: "MTB-only track (Grade 3)", unknown: "path with unknown surface" };
+// Dash patterns for unpaved classes, in line widths (MapLibre's unit).
+const DASH = { g1: [1.6, 1], g2: [0.8, 0.9], g3: [0.1, 1.5], unknown: [0.5, 0.8] };
 const isWide = () => matchMedia("(min-width: 900px)").matches;
 
 const panel = $("panel"), body = $("panel-body"), planBtn = $("plan"), fromIn = $("from"), toIn = $("to");
 let fromSel = null, toSel = null, myPos = null;     // fromSel null = "my location"
-let trip = null, chosen = 0, chips = [];
+let trip = null, chosen = 0, chips = [], markers = [];
 
-// --- Map ---------------------------------------------------------------------------
+// --- Map: vector tiles, so road and place names draw above our route ------------------------
 
+const dark = matchMedia("(prefers-color-scheme: dark)").matches;
 const last = store.get("lastCentre", null);
-const map = L.map("map", { zoomControl: false, attributionControl: false }).setView(last || UK_CENTRE, last ? 11 : 6);
-L.tileLayer(OSM, { maxZoom: 19 }).addTo(map);
-if (isWide()) L.control.zoom({ position: "topright" }).addTo(map);
-const layers = Object.fromEntries(["alts", "route", "marks", "tags"].map((k) => [k, L.layerGroup().addTo(map)]));
+const map = new maplibregl.Map({
+  container: "map", style: `https://tiles.openfreemap.org/styles/${dark ? "dark" : "positron"}`,
+  center: last ? [last[1], last[0]] : [UK_CENTRE[1], UK_CENTRE[0]], zoom: last ? 11 : 5, attributionControl: false,
+});
+map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '<a href="https://openfreemap.org">OpenFreeMap</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }), isWide() ? "bottom-left" : "top-left");
+if (isWide()) map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+const ROUTE_LAYERS = ["route-solid", ...Object.keys(DASH).map((k) => `route-${k}`)];
+const mapReady = new Promise((resolve) => map.on("load", () => {
+  const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;   // route goes under every label
+  const empty = { type: "FeatureCollection", features: [] };
+  map.addSource("route", { type: "geojson", data: empty });
+  map.addSource("alts", { type: "geojson", data: empty });
+  map.addLayer({ id: "alts", type: "line", source: "alts", layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#5f6f67", "line-width": 5, "line-opacity": 0.45, "line-dasharray": [0.6, 1.6] } }, firstLabel);
+  map.addLayer({ id: "route-casing", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": dark ? "#0f1a15" : "#ffffff", "line-width": 10, "line-opacity": 0.9 } }, firstLabel);
+  map.addLayer({ id: "route-solid", type: "line", source: "route", filter: ["==", ["get", "dash"], "none"], layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": ["get", "colour"], "line-width": 6 } }, firstLabel);
+  for (const [k, arr] of Object.entries(DASH)) map.addLayer({ id: `route-${k}`, type: "line", source: "route", filter: ["==", ["get", "dash"], k],
+    layout: { "line-cap": k === "g3" ? "round" : "butt", "line-join": "round" }, paint: { "line-color": ["get", "colour"], "line-width": 6, "line-dasharray": arr } }, firstLabel);
+  [...ROUTE_LAYERS, "alts"].forEach((id) => { map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer")); map.on("mouseleave", id, () => (map.getCanvas().style.cursor = "")); });
+  resolve();
+}));
 map.on("zoomend", layoutChips);
 
-// Fit the map to `bounds`, leaving room for the search card and the results sheet on phones.
-function fitTo(bounds) {
-  if (isWide()) return map.fitBounds(bounds, { padding: [40, 40] });
-  const top = $("top").getBoundingClientRect().bottom, sheet = innerHeight - panel.getBoundingClientRect().top;
-  map.fitBounds(bounds, { paddingTopLeft: [24, top + 16], paddingBottomRight: [24, sheet + 16] });
+const popup = (html, at, offset = 14) => new maplibregl.Popup({ closeButton: false, maxWidth: "270px", offset }).setLngLat(at).setHTML(html).addTo(map);
+let hoverPop = null;
+
+// Fit the map to [lat, lon] points, leaving room for the search card and the results sheet on phones.
+function fitTo(points, maxZoom = 15) {
+  const b = new maplibregl.LngLatBounds();
+  points.forEach(([la, lo]) => b.extend([lo, la]));
+  // Use where the sheet is heading, not where it is mid-slide.
+  const H = panel.offsetHeight, peek = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--peek"));
+  const sheet = { peek, half: H * 0.55, full: H }[panel.dataset.state] ?? peek;
+  const pad = isWide() ? { top: 40, bottom: 40, left: 40, right: 60 }
+    : { top: $("top").getBoundingClientRect().bottom + 16, bottom: Math.min(sheet + 16, innerHeight * 0.6), left: 24, right: 24 };
+  map.fitBounds(b, { padding: pad, maxZoom, duration: 600 });
 }
 
-// Tap the map: ride there, start from there, or start a loop there.
+// Tap the map: what's this stretch of route, switch to another route, or ride / start from here.
 map.on("click", (e) => {
-  const at = { lat: e.latlng.lat, lon: e.latlng.lng, name: "Dropped pin", label: "Dropped pin" };
+  const hit = map.queryRenderedFeatures(e.point, { layers: ROUTE_LAYERS.filter((id) => map.getLayer(id)) })[0];
+  if (hit) {
+    const s = SURFACE[hit.properties.cls], fit = trip && SURFACE_FIT[trip.bike]?.[hit.properties.cls];
+    return popup(`<b>${s.name}</b><br>${["Fine on a", "Take care on a", "Not suitable for a"][fit ?? 0]} ${BIKE_NAME[trip?.bike] || "bike"}.`, e.lngLat, 6);
+  }
+  const alt = map.queryRenderedFeatures(e.point, { layers: ["alts"] })[0];
+  if (alt) return chooseAlt(alt.properties.k);
+  const at = { lat: e.lngLat.lat, lon: e.lngLat.lng, name: "Dropped pin", label: "Dropped pin" };
   const loop = prefs.ride === "loop";
-  const html = `<b>${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}</b>
-    ${loop ? `<button class="pop-btn" data-act="from">Start loop here</button>` : `<button class="pop-btn" data-act="to">Ride here</button><button class="pop-btn" data-act="from">Start from here</button>`}`;
-  const pop = L.popup({ closeButton: false }).setLatLng(e.latlng).setContent(html).openOn(map);
+  const pop = popup(`<b>${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}</b>
+    ${loop ? `<button class="pop-btn" data-act="from">Start loop here</button>` : `<button class="pop-btn" data-act="to">Ride here</button><button class="pop-btn" data-act="from">Start from here</button>`}`, e.lngLat, 6);
   pop.getElement().querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", async () => {
-    map.closePopup();
+    pop.remove();
     if (b.dataset.act === "to") { toSel = at; toIn.value = at.label; } else { fromSel = at; fromIn.value = at.label; }
     const name = await fetchPlace(at.lat, at.lon);
     if (name) { at.name = at.label = name; (b.dataset.act === "to" ? toIn : fromIn).value = name; }
@@ -43,9 +78,30 @@ map.on("click", (e) => {
   }));
 });
 
+// An HTML marker that shows its details on tap, and on hover with a mouse.
+function addMarker(el, lat, lon, html, anchor = "center", offset = 16) {
+  const m = new maplibregl.Marker({ element: el, anchor }).setLngLat([lon, lat]).addTo(map);
+  if (html) {
+    const show = () => { hoverPop?.remove(); hoverPop = popup(typeof html === "function" ? html() : html, [lon, lat], offset); };
+    el.addEventListener("click", (e) => { e.stopPropagation(); show(); });
+    el.addEventListener("mouseenter", () => { if (matchMedia("(hover: hover)").matches) show(); });
+  }
+  markers.push(m);
+  return m;
+}
+function div(cls, html = "") { const d = document.createElement("div"); d.className = cls; d.innerHTML = html; return d; }
+function clearMap() {
+  markers.forEach((m) => m.remove()); markers = [];
+  chips.forEach((c) => c.marker.remove()); chips = [];
+  hoverPop?.remove();
+  // Clear now if the map is ready (drawTrip always is), so a new route drawn straight after isn't wiped.
+  const wipe = () => ["route", "alts"].forEach((id) => map.getSource(id)?.setData({ type: "FeatureCollection", features: [] }));
+  if (map.getSource("route")) wipe(); else mapReady.then(wipe);
+}
+
 // --- Settings (remembered between visits) -----------------------------------------------
 
-const prefs = { ride: "ab", bike: "road", busy: true, offroad: false, cafe: true, flat: false, miles: 25, colour: "surface", ...store.get("prefs", {}) };
+const prefs = { ride: "ab", bike: "road", busy: true, offroad: false, cafe: true, flat: false, miles: 25, ...store.get("prefs", {}) };
 const savePrefs = () => store.set("prefs", prefs);
 const lim = () => (prefs.bike === "motorbike" ? "motorbike" : "bicycle");
 
@@ -74,7 +130,6 @@ $("m-loop").addEventListener("click", () => setRide("loop"));
 $("bike").addEventListener("change", (e) => {
   prefs.bike = e.target.value;
   if (prefs.bike === "gravel" || prefs.bike === "mtb") $("opt-offroad").checked = prefs.offroad = true;
-  if (prefs.bike === "motorbike") prefs.colour = "weather";
   savePrefs(); syncControls(); if (trip) plan();
 });
 [["opt-busy", "busy"], ["opt-offroad", "offroad"], ["opt-cafe", "cafe"], ["opt-flat", "flat"]].forEach(([id, k]) =>
@@ -206,6 +261,10 @@ function setBusy(on, text) {
   planBtn.querySelector(".btn-text").textContent = on ? text : trip ? "Update ride" : "Plan my ride";
   if (on) setStatus(text);
 }
+const routeError = (e) => new Error(e.message === "noroute" ? "Couldn't find a route there. Try somewhere nearer, or a different spelling."
+  : e.message === "noloop" ? "Couldn't make a loop from here. Try a different length or start point."
+  : e.message === "busy" ? "The free cycle-route service is busy. Please try again in a minute."
+  : e.message || "The route service isn't responding. Please try again in a moment.");
 
 async function plan() {
   if (planning) return;
@@ -218,38 +277,40 @@ async function plan() {
     if (!fromSel) myPos = [from.lat, from.lon];
     store.set("lastCentre", [+from.lat.toFixed(3), +from.lon.toFixed(3)]);
     let option, others = [], to = null;
-    const fail = (e) => { throw new Error(e.message === "noroute" ? "Couldn't find a route there. Try somewhere nearer, or a different spelling." : e.message === "noloop" ? "Couldn't make a loop from here. Try a different length or start point." : e.message === "busy" ? "The free cycle-route service is busy. Please try again in a minute." : "The route service isn't responding. Please try again in a moment."); };
     if (prefs.ride === "ab") {
       to = toSel = await resolvePlace(toIn, toSel, toAc);
-      const route = bike === "motorbike" ? await fetchRoute(from, to, "motorbike").catch(fail)
-        : await fetchCycleRoute([from, to], cycleProfile(bike, opts.offroad, opts.avoidBusy)).catch(fail);
+      const route = bike === "motorbike" ? await fetchRoute(from, to, "motorbike").catch((e) => { throw routeError(e); })
+        : await fetchCycleRoute([from, to], cycleProfile(bike, opts.offroad, opts.avoidBusy)).catch((e) => { throw routeError(e); });
       option = { route, waypoints: [from, to] };
     } else {
       setBusy(true, "Checking the wind…");
       const h = (await fetchWeather(from.lat, from.lon)).hourly, i = PAST_HOURS;
-      const loop = await planLoop(from, prefs.miles, bike, opts, { from: h.wind_direction_10m[i], speed: h.wind_speed_10m[i] }, (t) => setBusy(true, t)).catch(fail);
+      const loop = await planLoop(from, prefs.miles, bike, opts, { from: h.wind_direction_10m[i], speed: h.wind_speed_10m[i] }, (t) => setBusy(true, t)).catch((e) => { throw routeError(e); });
       option = loop.best; others = loop.others;
     }
-    const ctx = { ride: prefs.ride, bike, opts, from, to, target: prefs.miles, choices: [option, ...others] };
+    // A → B bike routes fetch alternatives on demand (BRouter gives up to 3 more).
+    const ctx = { ride: prefs.ride, bike, opts, from, to, target: prefs.miles, choices: [option, ...others],
+      moreAlts: prefs.ride === "ab" && bike !== "motorbike" };
     trip = await analyse(option, ctx, 0);
     remember(fromSel); remember(to);
     shareState();
     setStatus("");
     renderTrip(true, true);
   } catch (e) {
-    setStatus(e.message && !/^(weather|route|search|elevation|cafes) ?\d*/.test(e.message) ? e.message : "Something went wrong fetching the route or weather. Please try again.", true);
+    setStatus(e.message && !/^(weather|route|search|elevation|cafes) ?\d*$/.test(e.message) ? e.message : "Something went wrong fetching the route or weather. Please try again.", true);
   } finally {
     planning = false;
     setBusy(false);
   }
 }
 
-// Weather along a route option (adding a café first if wanted), ready to show.
+// Weather along a route option (adding cafés first if wanted), ready to show.
 async function analyse(option, ctx, k) {
+  const now = Math.floor(Date.now() / 1000);
   if (ctx.opts.cafe && ctx.bike !== "motorbike" && !option.cafeSearched) {
-    setBusy(true, "Finding a café…");
-    try { option = await addCafeStop(option, ctx.bike, ctx.opts, Math.floor(Date.now() / 1000)); }
-    catch { option = { ...option, cafe: null, cafeSearched: true, cafeError: true }; }
+    setBusy(true, "Finding cafés…");
+    try { option = await addCafeStop(option, ctx.bike, ctx.opts, now); }
+    catch { option = { ...option, cafe: null, cafeList: [], cafeSearched: true, cafeError: true }; }
     ctx.choices[k] = option;
   }
   const route = option.route;
@@ -259,10 +320,13 @@ async function analyse(option, ctx, k) {
   const cps = makeCheckpoints(route);
   const [wx, elev] = await Promise.all([fetchRouteWeather(cps, forecastHoursFor(route)),
     route.ele ? Promise.resolve(elevFromRoute(route)) : fetchElevation(route).catch(() => null)]);
-  const p = planDepartures(cps, wx, ctx.bike === "motorbike" ? "motorbike" : "bicycle", Math.floor(Date.now() / 1000));
+  const p = planDepartures(cps, wx, ctx.bike === "motorbike" ? "motorbike" : "bicycle", now);
   if (!p.options.length) throw new Error("That ride is longer than the forecast covers. Try a shorter route.");
   chosen = 0;
-  return { ...ctx, ...p, option, route, cps, elev, alt: k, stats: route.cls ? surfaceStats(route, ctx.bike) : null };
+  const cafes = option.cafeList?.length ? cafesOnRoute(route, option.cafeList, now) : [];
+  if (option.cafe && !cafes.some((c) => c.name === option.cafe.name)) cafes.push(...cafesOnRoute(route, [option.cafe], now, 400));
+  return { ...ctx, ...p, option, route, cps, elev, alt: k, cafes: cafes.sort((a, b) => a.dist - b.dist),
+    stats: route.cls ? surfaceStats(route, ctx.bike) : null };
 }
 
 function elevFromRoute(route) {
@@ -271,15 +335,27 @@ function elevFromRoute(route) {
   return z.length > 1 ? { d, z } : null;
 }
 
+// Switch to route k (loops: already planned; A → B: fetched from BRouter the first time).
 async function chooseAlt(k) {
-  if (planning || !trip || k === trip.alt) return;
+  if (planning || !trip || k === trip.alt || k < 0) return;
   planning = true;
   try {
-    const ctx = { ...trip }, next = await analyse(ctx.choices[k], ctx, k);
-    trip = next;
+    const ctx = { ...trip };
+    if (!ctx.choices[k]) {
+      if (!ctx.moreAlts) return;
+      setStatus("Finding another route…");
+      const profile = cycleProfile(ctx.bike, ctx.opts.offroad, ctx.opts.avoidBusy);
+      const route = await fetchCycleRoute([ctx.from, ctx.to], profile, k).catch((e) => { throw routeError(e); });
+      const same = ctx.choices.some((c) => Math.abs(c.route.distance - route.distance) < 50 && Math.abs(c.route.duration - route.duration) < 30);
+      if (same || k >= 3) trip.moreAlts = false;
+      if (same) { setStatus("That's the only sensible route we found."); renderTrip(false, false); return; }
+      ctx.choices[k] = { route, waypoints: [ctx.from, ctx.to] };
+      ctx.moreAlts = trip.moreAlts;
+    }
+    trip = await analyse(ctx.choices[k], ctx, k);
     setStatus("");
     renderTrip(false, true);
-  } catch (e) { setStatus(e.message || "Couldn't load that loop.", true); }
+  } catch (e) { setStatus(e.message || "Couldn't load that route.", true); }
   finally { planning = false; setBusy(false); }
 }
 
@@ -318,103 +394,110 @@ function saveAs(which) {
     ["busy", "offroad", "cafe", "flat"].forEach((k) => ($(`opt-${k}`).checked = prefs[k]));
     if (st.L) { prefs.miles = st.L; $("loop-len").value = st.L; }
     setRide(st.r === "loop" ? "loop" : "ab"); syncControls();
-    plan();
+    mapReady.then(plan);
   } catch { /* a broken link just opens the normal page */ }
 })();
 
-// --- Rendering a ride ---------------------------------------------------------------------
+// --- Rendering a ride: one compact route card -------------------------------------------
 
 function renderTrip(first, fit) {
-  const o = trip.options[chosen], best = trip.options[trip.best], now = trip.options[0], cycle = trip.bike !== "motorbike";
-  const who = cycle ? "cycle" : "ride";
-  const when = chosen === 0 ? "now" : `at ${clock(o.dep)}`;
-  const text = [`Weather looks fine to ${who} this ride if you leave ${when}.`, `You can ${who} it if you leave ${when}, but parts need extra care.`,
-    `We'd advise against this ride if you leave ${when}.`][o.level];
-  const anim = (i) => (first ? `reveal" style="--i:${i}` : "swap");
-  const hazard = (d) => (d.level ? HAZARD_WORD[d.reasons.find((r) => r.level === d.level)?.kind] || VERDICT[d.level].title : "Clear");
+  const o = trip.options[chosen], best = trip.options[trip.best], cycle = trip.bike !== "motorbike";
+  const backWord = trip.ride === "loop" ? "back" : "arrive";
   const fromName = trip.from.name === "Your location" ? "your location" : trip.from.name;
   const title = trip.ride === "loop" ? `${miles(trip.route.distance)}-mile loop from ${fromName}` : `${trip.from.name} → ${trip.to.name}`;
-  let k = 0;
+  const n = trip.choices.filter(Boolean).length, known = !trip.moreAlts;
+  const hazard = (d) => (d.level ? HAZARD_WORD[d.reasons.find((r) => r.level === d.level)?.kind] || VERDICT[d.level].title : "Clear");
+  const anim = (i) => (first ? `reveal" style="--i:${i}` : "swap");
+  const sub = trip.alt === 0 ? (n > 1 || trip.moreAlts ? "Best match" : "") : trip.ride === "loop" ? `Heads ${compass(trip.option.heading ?? 0)} first` : "Alternative route";
 
-  let bestLine;
-  const backWord = trip.ride === "loop" ? "back" : "arrive";
-  if (trip.best === 0) bestLine = `<b>Leaving now is your best option</b><small>${VERDICT[now.level].title} · ${backWord} ${clock(now.arrive)}</small>`;
-  else bestLine = `<b>Best time to leave: ${clock(best.dep)}</b><small>${VERDICT[best.level].title} · ${trip.ride === "loop" ? "back" : "arrive"} ${clock(best.arrive)}${now.level > best.level ? ` · leaving now: ${VERDICT[now.level].title.toLowerCase()}` : ""}</small>`;
-
-  let html = `
-    <div class="card verdict ${VERDICT[o.level].cls} ${anim(k++)}">${badge(o.level)}
-      <div><h2>${VERDICT[o.level].title}</h2><p>${text}</p><p class="summary">${esc(o.summary)}</p>
-        <div class="trip"><span>${esc(title)}</span><span>${miles(trip.route.distance)} mi</span><span>${duration(trip.route.duration)}</span><span>Leave ${clock(o.dep)} · ${trip.ride === "loop" ? "back" : "arrive"} ${clock(o.arrive)}</span></div>
-        <small class="disc">Guidance only: use your own judgement on the road.</small>
-        <div class="links"><button type="button" class="linkbtn" id="share">Share ride</button>
-          ${trip.to ? `<button type="button" class="linkbtn" data-save="home">Save ${esc(trip.to.name)} as Home</button><button type="button" class="linkbtn" data-save="work">Save as Work</button>` : ""}</div>
-      </div></div>`;
-
-  if (trip.stats) html += `<div class="card ${anim(k++)}">${surfaceHtml(trip.stats, o)}</div>`;
-  else if (trip.elev) html += `<div class="card ${anim(k++)}"><h2 class="ch">Hills</h2>${profileHtml(o)}</div>`;
-
-  if (cycle && trip.opts.cafe) html += `<div class="card ${anim(k++)}"><h2 class="ch">Café stop</h2>${cafeHtml(o)}</div>`;
-
-  html += `<div class="card ${anim(k++)}"><h2 class="ch">When to leave</h2>
-      <div class="best"><span class="ico">${svg("clock")}</span><span>${bestLine}</span></div>
+  body.innerHTML = `
+    <div class="card rdlg ${anim(0)}">
+      <div class="rhead">
+        <button type="button" class="arr" id="prev" aria-label="Previous route" ${trip.alt === 0 ? "disabled" : ""}>‹</button>
+        <div class="rt"><b>${n > 1 || trip.moreAlts ? `Route ${trip.alt + 1}${known ? ` of ${n}` : ""}` : "Your route"}</b><small>${esc(sub)}</small></div>
+        <button type="button" class="arr" id="next" aria-label="Next route" ${trip.alt + 1 < n || trip.moreAlts ? "" : "disabled"}>›</button>
+      </div>
+      <p class="desc">${describe(o, title, backWord)}</p>
+      ${trip.stats ? surfaceBar(trip.stats) : ""}
+      <div class="links"><button type="button" class="linkbtn" id="share">Share</button>
+        ${trip.to ? `<button type="button" class="linkbtn" data-save="home">Save as Home</button><button type="button" class="linkbtn" data-save="work">Save as Work</button>` : ""}</div>
+    </div>
+    <div class="card ${anim(1)}"><h2 class="ch">When to leave${trip.best !== chosen ? ` · best ${trip.best === 0 ? "now" : clock(best.dep)}` : ""}</h2>
       <div class="deps" role="group" aria-label="Departure times">${trip.options.map((d, i) => {
         const mid = d.pts[Math.floor(d.pts.length / 2)];
         return `<button class="dep" aria-pressed="${i === chosen}" data-i="${i}" title="${VERDICT[d.level].title}: leave ${clock(d.dep)}">
           ${i === trip.best ? '<span class="star">Best</span>' : ""}<span class="t">${i === 0 ? "Now" : clock(d.dep)}</span>
           ${svg(wxBits(mid.h, mid.at).icon)}${lvPill(d.level)}<span class="hz">${hazard(d)}</span></button>`;
-      }).join("")}</div>${legend()}</div>`;
-
-  if (trip.choices.length > 1) html += `<div class="card ${anim(k++)}"><h2 class="ch">Other loops</h2><ul class="alts">${trip.choices.map((c, i) => {
-      const st = c.route.cls ? surfaceStats(c.route, trip.bike) : null, off = st ? Math.round(st.pct.g1 + st.pct.g2 + st.pct.g3 + st.pct.unknown) : 0;
-      return `<li><button type="button" data-alt="${i}" aria-pressed="${i === trip.alt}"><b>${i === 0 ? "Best match" : `Option ${i + 1}`} · ${miles(c.route.distance)} mi</b><span>${compass(c.heading)} first</span>
-        <small>${st ? `${Math.round(st.pct.busy)}% busy roads · ${off}% unpaved · ` : ""}↗ ${Math.round(c.route.climb || 0)} m climbing${i === trip.alt ? " · showing" : ""}</small></button></li>`;
-    }).join("")}</ul></div>`;
-
-  html += `<div class="card ${anim(k++)}"><h2 class="ch">Weather risk · along the route <a href="#how">How we score</a></h2>${scoreTiles(o.scores)}</div>
-    <div class="card ${anim(k++)}"><h2 class="ch">Why</h2>${reasonList(o.reasons, "No weather hazards found along the route.")}</div>
-    <div class="card quiet ${anim(k++)}"><h2 class="ch">Along the way</h2><details><summary class="linkbtn" style="display:inline-block">Show all ${o.pts.length} points</summary>${pointsHtml(o)}</details></div>`;
+      }).join("")}</div></div>
+    <details class="card more ${anim(2)}"><summary>More details</summary>
+      ${trip.stats?.issues.length ? `<h3>Surfaces to watch</h3>${issuesHtml(trip.stats)}` : ""}
+      ${trip.elev ? `<h3>Hills</h3>${profileHtml(o)}` : ""}
+      <h3>Weather risk <a href="#how">How we score</a></h3>${scoreTiles(o.scores)}
+      <h3>Why</h3>${reasonList(o.reasons, "No weather hazards found along the route.")}
+      <h3>Along the way</h3>${pointsHtml(o)}
+      ${cycle && trip.opts.cafe && cafeNote() ? `<p class="note">${cafeNote()}</p>` : ""}
+    </details>`;
 
   $("intro").hidden = true;
-  body.innerHTML = html;
+  $("prev").addEventListener("click", () => chooseAlt(trip.alt - 1));
+  $("next").addEventListener("click", () => chooseAlt(trip.alt + 1));
   body.querySelectorAll(".dep").forEach((b) => b.addEventListener("click", () => { chosen = +b.dataset.i; renderTrip(false, false); }));
-  body.querySelectorAll("[data-alt]").forEach((b) => b.addEventListener("click", () => chooseAlt(+b.dataset.alt)));
-  body.querySelectorAll("[data-colour]").forEach((b) => b.addEventListener("click", () => { prefs.colour = b.dataset.colour; savePrefs(); renderTrip(false, false); }));
   $("share").addEventListener("click", shareRide);
   body.querySelectorAll("[data-save]").forEach((b) => b.addEventListener("click", () => saveAs(b.dataset.save)));
   countUp(body);
   if (first) { setCollapsed(true, title); setSheet("half"); }
-  drawTrip(o, fit);
+  mapReady.then(() => drawTrip(o, fit));
 }
 
-function surfaceHtml(st, o) {
+// The route in one paragraph: verdict, distance and time, weather, roads, hills, cafés.
+function describe(o, title, backWord) {
+  const st = trip.stats, when = chosen === 0 ? "now" : `at ${clock(o.dep)}`;
+  const parts = [`<span class="vpill l${o.level}">${["✓", "!", "×"][o.level]} ${VERDICT[o.level].title}</span>`,
+    `${esc(title)}: ${miles(trip.route.distance)} mi, about ${duration(trip.route.duration)}, ${backWord} ${clock(o.arrive)} if you leave ${when}.`,
+    esc(o.summary)];
+  if (st) {
+    const main = ["quiet", "path"].filter((k) => st.pct[k] >= 5).map((k) => `${{ quiet: "quiet roads", path: "cycle paths" }[k]} (${Math.round(st.pct[k])}%)`);
+    const extra = [];
+    if (st.metres.busy >= 100) extra.push(`${miles(st.metres.busy)} mi on busy roads`);
+    const rough = st.metres.g1 + st.metres.g2 + st.metres.g3;
+    if (rough >= 100) extra.push(`${miles(rough)} mi of unpaved track`);
+    const bad = st.issues.filter((x) => x.level === 2).reduce((s, x) => s + x.len, 0);
+    parts.push(`${main.length ? `Mostly ${main.join(" and ")}` : "Mixed roads"}${extra.length ? `, with ${extra.join(" and ")}` : ""}.${bad ? ` <b>${miles(bad)} mi isn't suitable for a ${BIKE_NAME[trip.bike]}.</b>` : ""}`);
+    const p0 = o.pts[0], rain6 = p0.h.precipitation.slice(Math.max(0, p0.at - PAST_HOURS), p0.at + 1).reduce((a, b) => a + b, 0);
+    if (rough + st.metres.unknown > 800 && rain6 >= 1) parts.push("Unpaved stretches will be muddy after the recent rain.");
+  }
+  if (trip.route.climb) parts.push(`${Math.round(trip.route.climb)} m of climbing.`);
+  if (trip.bike !== "motorbike" && trip.opts.cafe) {
+    const c = trip.cafes.length;
+    parts.push(c ? `${c} café${c > 1 ? "s" : ""} on the way: tap ☕ on the map.` : trip.option.cafeError ? "Café search isn't responding right now." : "No cafés right on the route.");
+  }
+  if (trip.option.detours?.length) parts.push(`Includes a short detour to ${esc(trip.option.detours.map((d) => d.why).join(", "))}.`);
+  return parts.join(" ");
+}
+
+function surfaceBar(st) {
   const shown = SURFACES.filter((x) => st.metres[x.id] >= 50);
+  return `<div class="sbar" role="img" aria-label="${shown.map((x) => `${x.name} ${Math.round(st.pct[x.id])}%`).join(", ")}">${shown.map((x) => `<i style="width:${st.pct[x.id]}%;background:${x.colour}"></i>`).join("")}</div>
+    <div class="skey">${shown.map((x) => `<span><i class="sw" style="background:${x.colour}"></i>${x.name} ${st.pct[x.id] < 1 ? "<1" : Math.round(st.pct[x.id])}%</span>`).join("")}</div>`;
+}
+
+function issuesHtml(st) {
   const where = (d) => (d < 400 ? "near the start" : trip.route.distance - d < 400 ? "near the end" : `around mile ${miles(d)}`);
   const verb = ["", "take care on a", "not suitable for a"];
-  const issues = st.issues.slice(0, 4).map((x) => `<li>${lvPill(x.level)}<span>${miles(x.len)} mi of ${ISSUE_NAME[x.cls]} ${where(x.start)}: ${verb[x.level]} ${BIKE_NAME[trip.bike]}.</span></li>`).join("");
-  const unpaved = st.metres.g1 + st.metres.g2 + st.metres.g3 + st.metres.unknown;
-  const p0 = o.pts[0], rain6 = p0.h.precipitation.slice(Math.max(0, p0.at - PAST_HOURS), p0.at + 1).reduce((a, b) => a + b, 0);
-  const colourBy = prefs.colour === "weather" ? "weather" : "surface";
-  return `<h2 class="ch">Roads and surfaces</h2>
-    <div class="maptog">Colour the map by
-      <span class="toggle"><button type="button" data-colour="surface" aria-pressed="${colourBy === "surface"}">Surface</button><button type="button" data-colour="weather" aria-pressed="${colourBy === "weather"}">Weather</button></span></div>
-    <div class="sbar" role="img" aria-label="${shown.map((x) => `${x.name} ${Math.round(st.pct[x.id])}%`).join(", ")}">${shown.map((x) => `<i style="width:${st.pct[x.id]}%;background:${x.colour}"></i>`).join("")}</div>
-    <ul class="slist">${shown.map((x) => `<li><span class="sw" style="background:${x.colour}${x.dash ? `;background-image:repeating-linear-gradient(90deg,transparent 0 6px,rgba(255,255,255,.55) 6px 9px)` : ""}"></span><span>${x.name}</span><small>${st.pct[x.id] < 1 ? "<1" : Math.round(st.pct[x.id])}% · ${miles(st.metres[x.id])} mi</small></li>`).join("")}</ul>
-    ${issues ? `<ul class="issues">${issues}</ul>` : `<p class="note">${lvPill(0)} Every surface on this route suits a ${BIKE_NAME[trip.bike]}.</p>`}
-    ${unpaved > 800 && rain6 >= 1 ? `<p class="note">Unpaved stretches are likely to be muddy after ${rain6.toFixed(1)} mm of rain in the last ${PAST_HOURS} hours.</p>` : ""}
-    ${profileHtml(o)}`;
+  return `<ul class="issues">${st.issues.slice(0, 5).map((x) => `<li>${lvPill(x.level)}<span>${miles(x.len)} mi of ${ISSUE_NAME[x.cls]} ${where(x.start)}: ${verb[x.level]} ${BIKE_NAME[trip.bike]}.</span></li>`).join("")}</ul>`;
 }
 
-function cafeHtml(o) {
-  const c = trip.option.cafe;
-  if (trip.option.cafeError) return `<p class="empty">The café search isn't responding right now. Try again in a minute.</p>`;
-  if (!c && trip.option.cafeRejected) return `<p class="empty">The nearest café to halfway, ${esc(trip.option.cafeRejected)}, can only be reached on surfaces that don't suit a ${BIKE_NAME[trip.bike]}, so we've left it out.</p>`;
-  if (!c) return `<p class="empty">No café found within 400 m of the route near halfway${trip.ride === "loop" ? "; try a different loop length" : ""}.</p>`;
-  let best = 0, bd = Infinity;
-  trip.route.coords.forEach((p, i) => { const d = haversine(p, [c.lat, c.lon]); if (d < bd) { bd = d; best = i; } });
-  const eta = o.dep + trip.route.cumT[best], open = openAt(c.hours, new Date(eta * 1000));
-  return `<div class="cafe"><span class="ico" aria-hidden="true">☕</span><div><b>${esc(c.name)}</b>
-    <small>Mile ${miles(trip.route.cumD[best])} of ${miles(trip.route.distance)} · arrive about ${clock(eta)}</small>
-    <small>${open === true ? `<span class="open-yes">Open when you arrive</span>` : open === false ? `<span style="color:var(--stop-text);font-weight:700">Closed when you arrive</span>` : `<span class="open-unknown">Opening hours not listed</span>`}${c.hours ? ` · ${esc(c.hours)}` : ""}</small></div></div>`;
+function cafeNote() {
+  if (trip.option.cafeRejected) return `The nearest café to halfway, ${esc(trip.option.cafeRejected)}, is only reachable on surfaces that don't suit a ${BIKE_NAME[trip.bike]}, so we've left it out.`;
+  return trip.cafes.length ? "Cafés come from OpenStreetMap. Where several are close together we show the best local one." : "";
+}
+
+// Café details, shown when you tap or hover over its ☕ on the map.
+function cafePopup(c) {
+  const o = trip.options[chosen], eta = o.dep + c.t, open = openAt(c.hours, new Date(eta * 1000));
+  return `<b>${esc(c.name)}</b><br>${c.chain ? "Chain" : "Independent"}${trip.option.cafe?.name === c.name ? " · your café stop" : ""}<br>
+    Mile ${miles(c.dist)} · about ${clock(eta)}<br>
+    ${open === true ? '<span class="open-yes">Open when you get there</span>' : open === false ? '<span class="closed">Closed when you get there</span>' : '<span class="open-unknown">Opening hours not listed</span>'}${c.hours ? `<br><small>${esc(c.hours)}</small>` : ""}`;
 }
 
 function pointsHtml(o) {
@@ -427,7 +510,7 @@ function pointsHtml(o) {
   }).join("")}</ul>`;
 }
 
-// Hills: height along the route, the line coloured like the map.
+// Hills: height along the route.
 function profileHtml(o) {
   const e = trip.elev;
   if (!e || e.z.length < 2) return "";
@@ -435,82 +518,60 @@ function profileHtml(o) {
   const lo = Math.min(...e.z), hi = Math.max(...e.z), span = Math.max(30, hi - lo);
   const x = (d) => (d / total * W).toFixed(1), y = (z) => (H - 6 - (z - lo) / span * (H - 14)).toFixed(1);
   const pts = e.d.map((d, i) => `${x(d)},${y(e.z[i])}`);
-  const colour = levelColours();
-  const lines = o.segs.map((g) => {
-    const idx = e.d.map((_, i) => i).filter((i) => e.d[i] >= g.from.dist - 1 && e.d[i] <= g.to.dist + 1);
-    if (idx.length < 2) return "";
-    return `<polyline points="${idx.map((i) => `${x(e.d[i])},${y(e.z[i])}`).join(" ")}" fill="none" stroke="${colour[g.level]}" stroke-width="3" stroke-linecap="round" vector-effect="non-scaling-stroke"${LINE_DASH[g.level] ? ` stroke-dasharray="${LINE_DASH[g.level]}"` : ""}/>`;
-  }).join("");
   const st = climbStats(e.z);
   return `<div class="profile"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Hills: ${st.up} metres of climbing, ${st.min} to ${st.max} metres high.">
-      <polygon class="area" points="0,${H} ${pts.join(" ")} ${W},${H}"/>${lines}</svg>
+      <polygon class="area" points="0,${H} ${pts.join(" ")} ${W},${H}"/><polyline points="${pts.join(" ")}" fill="none" stroke="var(--moss)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
     <div class="stats-line"><span>↗ ${st.up} m climbing</span><span>↘ ${st.down} m descending</span><span>${st.min}–${st.max} m high</span>${trip.bike !== "motorbike" && st.up / (total / MILE) > 25 ? "<span>Hilly: allow extra time</span>" : ""}</div></div>`;
 }
 
-// --- Drawing a ride on the map -----------------------------------------------------------
+// --- Drawing a ride on the map: coloured by path type, labels stay on top ---------------------
 
 function drawTrip(o, fit) {
-  Object.values(layers).forEach((l) => l.clearLayers());
-  const { coords } = trip.route, colour = levelColours();
-  const tappable = (m) => m.on("click", (e) => { L.DomEvent.stop(e); m.toggleTooltip(); });
+  clearMap();
+  const { coords } = trip.route;
+  const line = (pts) => ({ type: "LineString", coordinates: pts.map(([la, lo]) => [lo, la]) });
 
-  // Other loops: thin grey lines you can tap to switch.
-  trip.choices.forEach((c, i) => {
-    if (i === trip.alt) return;
-    L.polyline(c.route.coords, { color: "#5f6f67", weight: 4, opacity: 0.45, dashArray: "2 7" }).addTo(layers.alts)
-      .bindTooltip(`Option ${i + 1}: ${miles(c.route.distance)} mi. Tap to show`).on("click", (e) => { L.DomEvent.stop(e); chooseAlt(i); });
-  });
+  // Other routes: faint dashed lines you can tap to switch.
+  map.getSource("alts").setData({ type: "FeatureCollection", features: trip.choices.map((c, k) => (k === trip.alt || !c ? null
+    : { type: "Feature", properties: { k }, geometry: line(c.route.coords) })).filter(Boolean) });
 
-  L.polyline(coords, { color: "#fff", weight: 10, opacity: 0.95 }).addTo(layers.route);
-  if (prefs.colour !== "weather" && trip.route.cls) {
-    // Surface colours: join consecutive stretches of the same class into one line.
+  // The route, one feature per run of the same path type (motorbike routes have no grading: one colour).
+  const feats = [];
+  if (trip.route.cls) {
     let start = 0;
     for (let i = 1; i <= trip.route.cls.length; i++) {
       if (i < trip.route.cls.length && trip.route.cls[i] === trip.route.cls[start]) continue;
-      const s = SURFACE[trip.route.cls[start]];
-      L.polyline(coords.slice(start, i + 1), { color: s.colour, weight: 6, opacity: 0.95, lineCap: s.dash ? "butt" : "round", dashArray: s.dash })
-        .bindTooltip(s.name, { sticky: true }).addTo(layers.route);
+      const c = trip.route.cls[start];
+      feats.push({ type: "Feature", properties: { cls: c, colour: SURFACE[c].colour, dash: DASH[c] ? c : "none" }, geometry: line(coords.slice(start, i + 1)) });
       start = i;
     }
-  } else {
-    o.segs.forEach((g) => {
-      const line = [[g.from.lat, g.from.lon], ...coords.slice(g.from.gi + 1, g.to.gi + 1), [g.to.lat, g.to.lon]];
-      L.polyline(line, { color: colour[g.level], weight: g.level === 2 ? 7 : 6, opacity: 0.95, lineCap: "round", dashArray: LINE_DASH[g.level] }).addTo(layers.route);
-    });
-  }
+  } else feats.push({ type: "Feature", properties: { cls: "quiet", colour: "#2d6a4f", dash: "none" }, geometry: line(coords) });
+  map.getSource("route").setData({ type: "FeatureCollection", features: feats });
 
-  const tip = (p, k) => {
-    const h = p.h, i = p.at, b = wxBits(h, i);
-    return `<b>${k === 0 ? "Start" : k === o.pts.length - 1 ? "End" : "Mile " + miles(p.dist)} · ${clock(p.eta)} · ${VERDICT[p.level].title}</b><br>${WMO[h.weather_code[i]] ?? ""}, ${b.temp}° · ${b.fall}<br>Wind from the ${compass(h.wind_direction_10m[i])}, ${Math.round(h.wind_speed_10m[i])} mph, gusts ${Math.round(h.wind_gusts_10m[i])}`;
-  };
-  const pin = (cls, ll, title, html = "") => L.marker(ll, { title, keyboard: false, icon: L.divIcon({ className: "", html: `<div class="${cls}">${html}</div>`, iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(layers.marks);
-  pin("pin-start", coords[0], trip.from.name);
-  if (trip.ride === "ab") pin("pin-end", coords[coords.length - 1], trip.to.name);
-  const c = trip.option.cafe;
-  if (c) tappable(L.marker([c.lat, c.lon], { title: c.name, icon: L.divIcon({ className: "", html: '<div class="pin-cafe">☕</div>', iconSize: [30, 30], iconAnchor: [15, 15] }) })
-    .bindTooltip(`<b>${esc(c.name)}</b><br>Café stop`, { direction: "top", offset: [0, -14] })).addTo(layers.marks);
+  addMarker(div("pin-start"), coords[0][0], coords[0][1], `<b>Start</b><br>${esc(trip.from.name)}`);
+  if (trip.ride === "ab") addMarker(div("pin-end"), coords.at(-1)[0], coords.at(-1)[1], `<b>Finish</b><br>${esc(trip.to.name)}`);
+  trip.cafes.forEach((c) => addMarker(div(`pin-cafe${c.chain ? " chain" : ""}${trip.option.cafe?.name === c.name ? " stop" : ""}`, "☕"), c.lat, c.lon, () => cafePopup(c), "center", 18));
 
+  // Weather tags (thinned so they never overlap).
   chips = o.pts.map((p, k) => {
-    const b = wxBits(p.h, p.at);
-    const marker = tappable(L.marker([p.lat, p.lon], { keyboard: false, icon: L.divIcon({ className: "", iconSize: [0, 0],
-      html: `<div class="wchip b${p.level}">${p.level ? `<b class="tg">${["", "!", "×"][p.level]}</b>` : ""}${svg(b.icon)}<span>${b.temp}°</span>${b.arrow}</div>` }) })
-      .bindTooltip(tip(p, k), { direction: "top", offset: [0, -30] }));
-    return { marker, ll: L.latLng(p.lat, p.lon), level: p.level, end: k === 0 || k === o.pts.length - 1 ? 1 : 0 };
+    const b = wxBits(p.h, p.at), h = p.h, i = p.at;
+    const el = div(`wchip b${p.level}`, `${p.level ? `<b class="tg">${["", "!", "×"][p.level]}</b>` : ""}${svg(b.icon)}<span>${b.temp}°</span>${b.arrow}`);
+    const tip = `<b>${k === 0 ? "Start" : k === o.pts.length - 1 ? "End" : "Mile " + miles(p.dist)} · ${clock(p.eta)} · ${VERDICT[p.level].title}</b><br>${WMO[h.weather_code[i]] ?? ""}, ${b.temp}° · ${b.fall}<br>Wind from the ${compass(h.wind_direction_10m[i])}, ${Math.round(h.wind_speed_10m[i])} mph, gusts ${Math.round(h.wind_gusts_10m[i])}`;
+    const marker = new maplibregl.Marker({ element: el, anchor: "bottom", offset: [0, -8] }).setLngLat([p.lon, p.lat]);
+    el.addEventListener("click", (e) => { e.stopPropagation(); hoverPop?.remove(); hoverPop = popup(tip, [p.lon, p.lat], 34); });
+    return { marker, lngLat: [p.lon, p.lat], level: p.level, end: k === 0 || k === o.pts.length - 1 ? 1 : 0 };
   });
-  if (fit) fitTo(L.latLngBounds(coords));
-  layoutChips();
+  if (fit) { fitTo(coords); map.once("moveend", layoutChips); } else layoutChips();
 }
 
 // Weather tags, thinned so they never overlap. Hazards and the ends win space first.
 function layoutChips() {
-  layers.tags.clearLayers();
   const placed = [];
-  const order = chips.map((c, k) => ({ ...c, k })).sort((a, b) => b.level - a.level || b.end - a.end || a.k - b.k);
-  for (const c of order) {
-    const pt = map.latLngToLayerPoint(c.ll);
-    if (placed.some((q) => Math.abs(q.x - pt.x) < 104 && Math.abs(q.y - pt.y) < 34)) continue;
-    placed.push(pt);
-    c.marker.addTo(layers.tags);
+  const order = chips.map((c, k) => ({ c, k })).sort((a, b) => b.c.level - a.c.level || b.c.end - a.c.end || a.k - b.k);
+  for (const { c } of order) {
+    const pt = map.project(c.lngLat);
+    const clash = placed.some((q) => Math.abs(q.x - pt.x) < 104 && Math.abs(q.y - pt.y) < 34);
+    if (clash) c.marker.remove(); else { placed.push(pt); c.marker.addTo(map); }
   }
 }
 
@@ -527,16 +588,16 @@ $("here-btn").addEventListener("click", async () => {
     store.set("lastCentre", [+pos.lat.toFixed(3), +pos.lon.toFixed(3)]);
     setStatus("Reading the sky…");
     const [data, place] = await Promise.all([fetchWeather(pos.lat, pos.lon), fetchPlace(pos.lat, pos.lon)]);
-    trip = null; chips = [];
-    Object.values(layers).forEach((l) => l.clearLayers());
-    L.marker([pos.lat, pos.lon], { icon: L.divIcon({ className: "", html: '<div class="me"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(layers.marks);
+    trip = null;
+    clearMap();
+    addMarker(div("me"), pos.lat, pos.lon, place ? `<b>You're near ${esc(place)}</b>` : "");
     $("intro").hidden = true;
     body.innerHTML = hereHtml(data, place, lim());
     countUp(body);
     setStatus("");
     setCollapsed(true, place ? `Riding near ${place}` : "Riding near you");
     setSheet("half");
-    fitTo(L.latLng(pos.lat, pos.lon).toBounds(3000));
+    fitTo([[pos.lat - 0.02, pos.lon - 0.03], [pos.lat + 0.02, pos.lon + 0.03]], 14);
   } catch (e) {
     setStatus(e.message && !/^weather/.test(e.message) ? e.message : "Couldn't fetch the weather right now. Please try again in a moment.", true);
     setSheet("half");

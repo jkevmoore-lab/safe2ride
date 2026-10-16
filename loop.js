@@ -44,8 +44,7 @@ async function searchCafes(south, west, north, east) {
       { signal: AbortSignal.timeout(10000) });
     if (res.ok) {
       const j = await res.json();
-      const cafes = j.filter((e) => e.category === "amenity" && e.type === "cafe").map((e) => ({ lat: +e.lat, lon: +e.lon, name: e.name || "Café",
-        hours: e.extratags?.opening_hours || "", bikeFriendly: e.extratags?.bicycle === "yes" || /cycl/i.test(e.name || "") }));
+      const cafes = j.filter((e) => e.category === "amenity" && e.type === "cafe").map((e) => ({ lat: +e.lat, lon: +e.lon, ...cafeFrom(e.name, e.extratags || {}) }));
       return cafes;                       // an empty list is a real answer: no cafés there
     }
   } catch { /* fall through to Overpass */ }
@@ -55,12 +54,44 @@ async function searchCafes(south, west, north, east) {
       const res = await fetch(`${url}?data=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(12000) });
       if (!res.ok) continue;
       const j = await res.json();
-      return j.elements.map((e) => ({ lat: e.lat ?? e.center?.lat, lon: e.lon ?? e.center?.lon, name: e.tags?.name || "Café",
-        hours: e.tags?.opening_hours || "", bikeFriendly: e.tags?.bicycle === "yes" || /cycl/i.test(e.tags?.name || "") }))
+      return j.elements.map((e) => ({ lat: e.lat ?? e.center?.lat, lon: e.lon ?? e.center?.lon, ...cafeFrom(e.tags?.name, e.tags || {}) }))
         .filter((c) => c.lat != null);
     } catch { /* try the next mirror */ }
   }
   throw new Error("cafes");
+}
+
+function cafeFrom(name, t) {
+  return { name: name || "Café", hours: t.opening_hours || "", brand: t.brand || (t["brand:wikidata"] ? "chain" : ""), cuisine: t.cuisine || "",
+    bikeFriendly: t.bicycle === "yes" || /cycl/i.test(name || "") };
+}
+
+// Chains lose out to local, coffee-focused places when several are close together.
+const CHAINS = /\b(costa|starbucks|caff[eè] nero|nero|pret|greggs|mcdonald'?s|coffee ?#1|esquires|black sheep coffee|gail'?s|patisserie valerie|harris \+ hoole|tim hortons|subway|wetherspoon|bb'?s coffee|puccino'?s|leon)\b/i;
+function isChain(c) { return !!c.brand || CHAINS.test(c.name); }
+function cafeQuality(c) {
+  let q = isChain(c) ? 0 : 3;
+  if (/coffee/.test(c.cuisine) || /coffee|roast|espresso|brew|barista/i.test(c.name)) q += 2;
+  if (c.bikeFriendly) q += 2;
+  return q;
+}
+
+// Cafés within `within` metres of the route, best one per 400 m cluster, in riding order.
+// Each gets `t` (seconds from the start to reach it) and `dist` (metres along the route).
+function cafesOnRoute(route, cafes, dep, within = 150) {
+  const samples = [];
+  for (let d = 0; d <= route.distance; d += 50) samples.push(pointAt(route, d));
+  const on = [];
+  for (const c of cafes) {
+    let near = null, nd = Infinity;
+    for (const s of samples) { const d = haversine([s.lat, s.lon], [c.lat, c.lon]); if (d < nd) { nd = d; near = s; } }
+    if (nd > within) continue;
+    const open = openAt(c.hours, new Date((dep + near.t) * 1000));
+    on.push({ ...c, off: Math.round(nd), dist: near.dist, t: near.t, chain: isChain(c), quality: cafeQuality(c) + (open === true ? 1 : open === false ? -4 : 0) });
+  }
+  const kept = [];
+  for (const c of on.sort((a, b) => b.quality - a.quality)) if (!kept.some((k) => haversine([k.lat, k.lon], [c.lat, c.lon]) < 400)) kept.push(c);
+  return kept.sort((a, b) => a.dist - b.dist);
 }
 
 // Best café near the middle of the route (35–65% of the way), open when you'd arrive if we can tell.
@@ -74,7 +105,7 @@ function pickCafe(route, cafes, dep) {
     for (const s of samples) { const d = haversine([s.lat, s.lon], [c.lat, c.lon]); if (d < nd) { nd = d; near = s; } }
     if (nd > 400) continue;
     const frac = near.dist / route.distance, eta = dep + near.t, open = openAt(c.hours, new Date(eta * 1000));
-    const score = Math.abs(frac - 0.5) * 20 + nd / 100 + (open === false ? 100 : open === null ? 3 : 0) - (c.bikeFriendly ? 2 : 0);
+    const score = Math.abs(frac - 0.5) * 20 + nd / 100 + (open === false ? 100 : open === null ? 3 : 0) - cafeQuality(c);
     if (!best || score < best.score) best = { cafe: c, dist: nd, frac, eta, open, score };
   }
   return best && best.open !== false ? best : null;
@@ -111,12 +142,92 @@ function insertStop(waypoints, route, stop) {
 // --- Loops --------------------------------------------------------------------------
 
 // Waypoints for a round loop of about `length` metres, its far point on bearing `brg` from the start.
-// Roads wind, so the circle is drawn ~25% smaller than the target length.
+// Roads wind, so the circle is drawn ~15% smaller than the target length.
 function loopWaypoints(start, length, brg) {
-  const r = length / (2 * Math.PI * 1.25);
+  const r = length / (2 * Math.PI * 1.15);
   const c = destPoint(start.lat, start.lon, brg, r);
   const back = (brg + 180) % 360;
   return [start, ...[back + 90, back + 180, back + 270].map((b) => destPoint(c.lat, c.lon, b % 360, r)), start];
+}
+
+// Out-and-back "dog legs": where the route rides back over road it covered shortly before.
+// Returns [{ start, end, apex }] in metres along the route (the loop's own start/finish road is ignored).
+function findSpurs(route) {
+  const cells = new Map(), hits = [], maxGap = Math.min(8000, route.distance * 0.4);
+  for (let d = 0; d <= route.distance; d += 25) {
+    const p = pointAt(route, d), key = `${Math.round(p.lat / 0.0003)},${Math.round(p.lon / 0.00045)}`;
+    const seen = cells.get(key);
+    if (seen === undefined) cells.set(key, d);
+    else if (d - seen > 150 && d - seen < maxGap) hits.push([seen, d]);
+  }
+  // Going out and coming back pair up as nested intervals; a spur spans the outermost pair.
+  const spurs = [];
+  for (const [a, b] of hits.sort((x, y) => x[0] - y[0])) {
+    const sp = spurs.find((x) => a <= x.end && b >= x.start);
+    if (sp) { sp.start = Math.min(sp.start, a); sp.end = Math.max(sp.end, b); } else spurs.push({ start: a, end: b });
+  }
+  return spurs.filter((x) => x.end - x.start >= 300).map((x) => ({ ...x, apex: pointAt(route, (x.start + x.end) / 2) }));
+}
+
+// Things worth a detour near each point (viewpoints, historic sites, attractions, cafés), from OpenStreetMap.
+// Fails quietly to [] so a busy server just means "nothing special here".
+async function interestNear(points, radius = 300) {
+  if (!points.length) return [];
+  const around = points.map((p) => `(around:${radius},${p.lat.toFixed(5)},${p.lon.toFixed(5)})`);
+  const q = `[out:json][timeout:15];(${around.map((a) => `node["tourism"~"viewpoint|attraction"]${a};node["historic"~"castle|ruins|monument|archaeological_site|manor|abbey|memorial"]${a};node["amenity"="cafe"]${a};`).join("")});out 50;`;
+  for (const url of OVERPASS) {
+    try {
+      const res = await fetch(`${url}?data=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) return (await res.json()).elements.map((e) => ({ lat: e.lat, lon: e.lon, name: e.tags?.name || e.tags?.tourism || e.tags?.historic || "café" }));
+    } catch { /* next mirror */ }
+  }
+  return [];
+}
+
+// Move the waypoint that caused each pointless dog leg back to where the spur leaves the loop, and re-route.
+// One fix at a time, re-checking the new route each time (positions shift after every re-route).
+async function removeSpurs(cand, target, bike, opts, wind, profile) {
+  let pois = null;
+  const kept = (cand.detours ||= []);
+  for (let round = 0; round < 2; round++) {
+    const spurs = findSpurs(cand.route).filter((x) => !kept.some((d) => haversine([d.apex.lat, d.apex.lon], [x.apex.lat, x.apex.lon]) < 200))
+      .sort((a, b) => (b.end - b.start) - (a.end - a.start));
+    if (!spurs.length) return;
+    pois ||= await interestNear(spurs.map((x) => x.apex));
+    let improved = false;
+    for (const spur of spurs) {
+      const worthIt = pois.find((p) => haversine([p.lat, p.lon], [spur.apex.lat, spur.apex.lon]) < 350);
+      if (worthIt) { kept.push({ ...spur, why: worthIt.name }); continue; }
+      const near = cand.waypoints.map((w, i) => ({ i, d: haversine([w.lat, w.lon], [spur.apex.lat, spur.apex.lon]) }))
+        .slice(1, -1).sort((a, b) => a.d - b.d)[0];
+      if (!near || near.d > (spur.end - spur.start) / 2 + 300) continue;
+      const base = pointAt(cand.route, spur.start);
+      try {
+        const wps = cand.waypoints.map((p, i) => (i === near.i ? { lat: base.lat, lon: base.lon } : p));
+        const route = await fetchCycleRoute(wps, profile), score = scoreLoop(route, target, bike, opts, wind);
+        if (score.total < cand.score.total) { Object.assign(cand, { route, waypoints: wps, score }); improved = true; break; }
+      } catch (e) { if (e.message === "busy") return; }
+    }
+    if (!improved) return;
+  }
+}
+
+// After fixes the loop can drift from the chosen length: stretch or shrink it around the start once.
+async function rescaleLoop(cand, target, bike, opts, wind, profile) {
+  const f = target / cand.route.distance;
+  if (Math.abs(1 - f) < 0.08) return;
+  const s = cand.waypoints[0], last = cand.waypoints.length - 1;
+  const scale = (w, k) => ({ lat: s.lat + (w.lat - s.lat) * k, lon: s.lon + (w.lon - s.lon) * k });
+  // Two ways to stretch: the whole loop, or just its far point (keeps the roads near home).
+  const far = Math.floor(last / 2);
+  const variants = [cand.waypoints.map((w, i) => (i === 0 || i === last ? w : scale(w, f))),
+    cand.waypoints.map((w, i) => (i === far ? scale(w, 1 + (f - 1) * 2) : w))];
+  for (const wps of variants) {
+    try {
+      const route = await fetchCycleRoute(wps, profile), score = scoreLoop(route, target, bike, opts, wind);
+      if (score.total < cand.score.total) Object.assign(cand, { route, waypoints: wps, score });
+    } catch (e) { if (e.message === "busy") return; }
+  }
 }
 
 // Share of the route that rides over road already covered earlier (out-and-back sections).
@@ -150,10 +261,11 @@ function scoreLoop(route, target, bike, opts, wind) {
   const [out, home] = halfWinds(route, wind.from, wind.speed);
   const climbPerMile = route.climb / (route.distance / MILE);
   const parts = {
-    length: 40 * Math.abs(route.distance - target) / target,     // 10% off = 4
+    length: 80 * Math.abs(route.distance - target) / target,     // 10% off = 8
     busy: (opts.avoidBusy ? 0.6 : 0.2) * st.pct.busy,           // 10% busy = 6 (when avoiding)
     surface: 0.5 * care + 8 * bad,                              // unsuitable surfaces weigh heavily: 1% = 8
     overlap: 0.3 * overlapPct(route),
+    spurs: 300 * findSpurs(route).reduce((s, x) => s + x.end - x.start, 0) / route.distance,   // dog legs: 5% of the ride = 15
     wind: Math.max(0, home) * 0.6 - Math.max(0, out) * 0.2,     // headwind home costs; headwind out is welcome
     hills: (opts.flat ? 0.4 : 0.05) * climbPerMile,
   };
@@ -181,7 +293,7 @@ async function planLoop(start, miles, bike, opts, wind, progress = () => {}) {
       /* otherwise that direction had no route (sea, private land): skip it */
     }
     // Good enough already? Stop early to go easy on the free route server.
-    const good = tried.find((t) => t.score.total < 12 && !t.score.stats.issues.some((x) => x.level === 2));
+    const good = tried.find((t) => t.score.total < 16 && !t.score.stats.issues.some((x) => x.level === 2) && !findSpurs(t.route).length);
     if (good && k >= 1) break;
     // Still too much busy road after four tries? Try two more directions.
     if (k === 3 && opts.avoidBusy && tried.length && Math.min(...tried.map((t) => t.score.stats.pct.busy)) > 10) {
@@ -193,12 +305,23 @@ async function planLoop(start, miles, bike, opts, wind, progress = () => {}) {
   // Unsuitable stretches usually come from a waypoint landing on a path or track: nudge it and re-route.
   // Worth repairing: loops that would beat the current best if their unsuitable stretch went away (at most two).
   const lead = tried[0].score.total;
-  const fixable = tried.filter((c) => c.score.stats.issues.some((x) => x.level === 2) && c.score.total - c.score.parts.surface < lead).slice(0, 2);
+  const fixable = tried.filter((c) => c.score.stats.issues.some((x) => x.level === 2) && c.score.total - c.score.parts.surface < lead).slice(0, 1);
   for (const cand of fixable) {
     progress("Steering round a rough track…");
     const fixed = await repairLoop(cand, target, bike, opts, wind, profile);
     if (fixed) Object.assign(cand, fixed);
   }
+  tried.sort((a, b) => a.score.total - b.score.total);
+  // Dog legs: keep them only when they lead somewhere worth seeing.
+  for (const cand of tried.slice(0, 2)) {
+    if (!findSpurs(cand.route).length) continue;
+    progress("Smoothing out dog legs…");
+    await removeSpurs(cand, target, bike, opts, wind, profile);
+  }
+  tried.sort((a, b) => a.score.total - b.score.total);
+  progress("Fine-tuning the distance…");
+  await rescaleLoop(tried[0], target, bike, opts, wind, profile);
+  if (findSpurs(tried[0].route).length) await removeSpurs(tried[0], target, bike, opts, wind, profile);
   tried.sort((a, b) => a.score.total - b.score.total);
   return { best: tried[0], others: tried.slice(1, 3) };
 }
@@ -231,14 +354,16 @@ async function repairLoop(cand, target, bike, opts, wind, profile) {
 
 // Re-route an option through the best café near halfway. Returns the updated option, or the original if none.
 async function addCafeStop(option, bike, opts, dep) {
-  const box = routeBounds(option.route, 0.3, 0.7, 0.006);
-  const cafes = await searchCafes(...box);
+  const cafes = await searchCafes(...routeBounds(option.route, 0, 1, 0.004));
+  const base = { ...option, cafeList: cafes, cafeSearched: true };
+  const midway = cafesOnRoute(option.route, cafes, dep).filter((c) => c.dist > 0.3 * option.route.distance && c.dist < 0.7 * option.route.distance);
+  if (midway.length) return { ...base, cafe: null };          // already passes a café near halfway: no detour needed
   const pick = pickCafe(option.route, cafes, dep);
-  if (!pick) return { ...option, cafe: null, cafeSearched: true };
+  if (!pick) return { ...base, cafe: null };
   const wps = insertStop(option.waypoints, option.route, pick.cafe);
   const route = await fetchCycleRoute(wps, option.route.profile);
   // Don't take a detour that puts the bike on surfaces it can't ride.
   const unsuitable = (r) => surfaceStats(r, bike).issues.filter((x) => x.level === 2).reduce((s, x) => s + x.len, 0);
-  if (unsuitable(route) > unsuitable(option.route) + 100) return { ...option, cafe: null, cafeSearched: true, cafeRejected: pick.cafe.name };
-  return { ...option, route, waypoints: wps, cafe: { ...pick.cafe, open: pick.open, frac: pick.frac }, cafeSearched: true };
+  if (unsuitable(route) > unsuitable(option.route) + 100) return { ...base, cafe: null, cafeRejected: pick.cafe.name };
+  return { ...base, route, waypoints: wps, cafe: { ...pick.cafe, open: pick.open, frac: pick.frac } };
 }

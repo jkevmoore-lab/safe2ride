@@ -174,7 +174,9 @@ function cycleProfile(bike, offroad, avoidBusy) {
 }
 
 // Route through waypoints [{lat, lon}, …]. `alt` 0–3 asks for an alternative route.
+let routeCalls = 0;   // diagnostics: how many routing requests a plan made
 async function fetchCycleRoute(waypoints, profile, alt = 0) {
+  routeCalls++;
   const lonlats = waypoints.map((w) => `${w.lon.toFixed(6)},${w.lat.toFixed(6)}`).join("|");
   const res = await fetch(`https://brouter.de/brouter?lonlats=${lonlats}&profile=${profile}&alternativeidx=${alt}&format=geojson`);
   if (res.status === 403 || res.status === 429) throw new Error("busy");     // the free server's rate limit

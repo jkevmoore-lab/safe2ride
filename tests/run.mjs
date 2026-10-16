@@ -3,7 +3,7 @@ import fs from "fs";
 import assert from "assert/strict";
 
 const src = ["logic.js", "route.js", "loop.js"].map((f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
-const S = new Function(src + "; return { openAt, classifyWay, surfaceStats, loopWaypoints, overlapPct, insertStop, haversine, destPoint, fetchCycleRoute, cycleProfile, planLoop, addCafeStop, summarize, withPlace, climbStats, fetchElevation, pointAt, precipType, compass, assess, scores, bestWindow, soakScore, windScore, makeCheckpoints, evaluateDeparture, planDepartures, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE };")();
+const S = new Function(src + "; return { findSpurs, isChain, cafesOnRoute, openAt, classifyWay, surfaceStats, loopWaypoints, overlapPct, insertStop, haversine, destPoint, fetchCycleRoute, cycleProfile, planLoop, addCafeStop, summarize, withPlace, climbStats, fetchElevation, pointAt, precipType, compass, assess, scores, bestWindow, soakScore, windScore, makeCheckpoints, evaluateDeparture, planDepartures, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE };")();
 
 // Browsers send a User-Agent automatically; Node doesn't, and some map services require one.
 const realFetch = globalThis.fetch;
@@ -156,7 +156,7 @@ console.log("Loops");
 test("loop waypoints start and end at home, far point in the chosen direction", () => {
   const start = { lat: 51.78, lon: -1.48 }, w = S.loopWaypoints(start, 48000, 90);
   assert.equal(w.length, 5); assert.equal(w[0], start); assert.equal(w[4], start);
-  const far = w[2], r = 48000 / (2 * Math.PI * 1.25);
+  const far = w[2], r = 48000 / (2 * Math.PI * 1.15);
   assert.ok(Math.abs(S.haversine([start.lat, start.lon], [far.lat, far.lon]) - 2 * r) < 50);
   assert.ok(far.lon > start.lon && Math.abs(far.lat - start.lat) < 0.01);
 });
@@ -170,6 +170,26 @@ test("a stop goes between the waypoints either side of it", () => {
   const route = { coords: [[0, 0], [0, 1], [0, 2], [0, 3]], cumD: [0, 1, 2, 3], distance: 3 };
   const wps = [{ lat: 0, lon: 0 }, { lat: 0, lon: 1 }, { lat: 0, lon: 3 }];
   assert.deepEqual(S.insertStop(wps, route, { lat: 0.01, lon: 2 }).map((w) => w.lon), [0, 1, 2, 3]);
+});
+
+console.log("Dog legs and cafés");
+const path = (pts) => { const cumD = [0]; for (let i = 1; i < pts.length; i++) cumD.push(cumD[i - 1] + S.haversine(pts[i - 1], pts[i])); return { coords: pts, cumD, cumT: cumD.map((d) => d / 5), distance: cumD.at(-1) }; };
+test("a dog leg off a square loop is found; the loop itself isn't", () => {
+  const A = [51.70, -1.40], B = [51.73, -1.40], C = [51.73, -1.35], D = [51.70, -1.35], tip = [51.745, -1.375], mid = [51.73, -1.375];
+  assert.equal(S.findSpurs(path([A, B, C, D, A])).length, 0);
+  const sp = S.findSpurs(path([A, B, mid, tip, mid, C, D, A]));
+  assert.equal(sp.length, 1);
+  assert.ok(Math.abs(sp[0].apex.lat - 51.745) < 0.002, JSON.stringify(sp[0].apex));
+});
+test("chains are recognised by brand or name", () => {
+  assert.ok(S.isChain({ name: "Costa Coffee" })); assert.ok(S.isChain({ name: "Caffè Nero" }));
+  assert.ok(S.isChain({ name: "The Bean", brand: "Some Brand" })); assert.ok(!S.isChain({ name: "Ue Coffee Roastery" }));
+});
+test("cafés near each other: the local coffee place wins; far-off cafés are left out", () => {
+  const r = path([[51.70, -1.40], [51.70, -1.30]]);
+  const cafes = [{ lat: 51.7003, lon: -1.35, name: "Costa Coffee", hours: "" }, { lat: 51.7004, lon: -1.3505, name: "Little Roastery", hours: "" },
+    { lat: 51.71, lon: -1.33, name: "Too far", hours: "" }, { lat: 51.7002, lon: -1.32, name: "Village Café", hours: "" }];
+  assert.deepEqual(S.cafesOnRoute(r, cafes, 1_800_000_000).map((c) => c.name), ["Little Roastery", "Village Café"]);
 });
 
 if (process.argv.includes("--live")) {

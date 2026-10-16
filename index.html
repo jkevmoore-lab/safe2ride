@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css">
 <style>
   :root {
     --sand: #f4f2ea; --card: #ffffff; --ink: #14251e; --muted: #5f6f67; --line: #e4e2d8;
@@ -38,12 +38,13 @@
 
   /* ---- Map fills the screen ---- */
   #map { position: fixed; inset: 0; background: #e8ece6; z-index: 0; }
-  .leaflet-container { font: inherit; }
-  .leaflet-tile-pane { filter: saturate(.35) brightness(1.04) contrast(.9); }
-  @media (prefers-color-scheme: dark) { .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) saturate(.3) brightness(.85) contrast(.9); } #map { background: #1a1f1d; } }
-  .leaflet-touch .leaflet-bar a { width: 40px; height: 40px; line-height: 40px; }
-  .leaflet-tooltip, .leaflet-popup-content { font: 500 .875rem/1.4 "Plus Jakarta Sans", system-ui, sans-serif; }
-  .leaflet-popup-content-wrapper { border-radius: 14px; }
+  @media (prefers-color-scheme: dark) { #map { background: #1a1f1d; } }
+  .maplibregl-popup-content { font: 500 .875rem/1.45 "Plus Jakarta Sans", system-ui, sans-serif; border-radius: 14px; padding: 10px 14px; color: #14251e; box-shadow: 0 6px 20px rgba(0,0,0,.2); }
+  .maplibregl-popup-content small { color: #5f6f67; }
+  .maplibregl-ctrl-group button { width: 40px; height: 40px; }
+  .maplibregl-ctrl-top-left { top: calc(env(safe-area-inset-top, 0px)); }
+  @media (max-width: 899px) { .maplibregl-ctrl-top-left { display: none; } }
+  .open-yes { color: #1f6b3f; font-weight: 700; } .closed { color: #a3321f; font-weight: 700; } .open-unknown { color: #5f6f67; font-weight: 600; }
   .pop-btn { display: block; width: 100%; margin-top: 6px; border: 0; border-radius: 999px; padding: 10px 14px; background: #14382b; color: #fff; font-weight: 700; cursor: pointer; }
 
   /* ---- Search card (top on phones; top of the side column on computers) ---- */
@@ -172,7 +173,7 @@
   .linkbtn:hover { opacity: 1; }
 
   /* Surface breakdown */
-  .sbar { display: flex; height: 16px; border-radius: 999px; overflow: hidden; margin: 4px 0 10px; background: var(--line); }
+  .sbar { display: flex; height: 12px; border-radius: 999px; overflow: hidden; margin: 4px 0 6px; background: var(--line); }
   .sbar i { display: block; height: 100%; }
   .slist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: .9rem; }
   .slist li { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; }
@@ -183,22 +184,24 @@
   .issues .lvp { flex: none; width: 22px; height: 22px; border-radius: 50%; margin-top: 1px; }
   .note { margin: 10px 0 0; color: var(--muted); font-size: .9rem; }
 
-  /* Café */
-  .cafe { display: flex; gap: 12px; align-items: flex-start; }
-  .cafe .ico { flex: none; width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--care-soft); font-size: 1.3rem; }
-  .cafe b { display: block; font-size: 1.05rem; }
-  .cafe small { color: var(--muted); display: block; }
-  .open-yes { color: var(--go-text); font-weight: 700; } .open-unknown { color: var(--muted); font-weight: 600; }
-
-  /* Alternatives */
-  .alts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  .alts button { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; text-align: left; border: 1px solid var(--line); background: var(--card);
-    color: var(--ink); border-radius: 14px; padding: 10px 12px; cursor: pointer; }
-  .alts button[aria-pressed="true"] { border-color: var(--forest); box-shadow: inset 0 0 0 1px var(--forest); }
-  .alts small { color: var(--muted); grid-column: 1 / -1; }
-
-  /* Map colour toggle */
-  .maptog { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .875rem; color: var(--muted); font-weight: 600; }
+  /* Route card: arrows to switch routes, then one descriptive paragraph */
+  .rdlg { padding: 10px 14px 14px; }
+  .rhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .rt { text-align: center; line-height: 1.25; }
+  .rt b { display: block; font-size: 1rem; } .rt small { color: var(--muted); font-size: .8125rem; }
+  .arr { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: var(--sand); color: var(--ink); font-size: 1.6rem; line-height: 1; cursor: pointer; }
+  .arr:disabled { opacity: .3; cursor: default; }
+  .desc { margin: 0 0 10px; font-size: .9375rem; line-height: 1.5; }
+  .vpill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 800; font-size: .875rem; margin-right: 4px; color: #fff; }
+  .vpill.l0 { background: var(--go-text); } .vpill.l1 { background: var(--care-text); } .vpill.l2 { background: var(--stop-text); }
+  @media (prefers-color-scheme: dark) { .vpill { color: var(--card); } }
+  .skey { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .8125rem; color: var(--muted); font-weight: 600; }
+  .skey .sw { display: inline-block; width: 14px; height: 8px; margin-right: 5px; vertical-align: 1px; }
+  .more summary { cursor: pointer; font-weight: 800; list-style: none; display: flex; justify-content: space-between; align-items: center; min-height: 40px; }
+  .more summary::after { content: "+"; font-size: 1.4rem; color: var(--moss); }
+  .more[open] summary::after { content: "−"; }
+  .more h3 { margin: 16px 0 8px; font-size: .8125rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .more h3 a { float: right; text-transform: none; letter-spacing: 0; color: var(--moss); }
 
   /* Level pill: colour plus a symbol, so it reads without colour vision */
   .lvp { display: grid; place-items: center; width: 100%; height: 20px; border-radius: 999px; color: var(--card); font-weight: 800; font-size: .8125rem; line-height: 1;
@@ -274,14 +277,14 @@
   .profile .stats-line { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: .8125rem; color: var(--muted); font-weight: 600; margin-top: 4px; }
 
   /* Weather tags on the map */
-  .wchip { position: absolute; left: 0; bottom: 9px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 5px;
+  .wchip { display: flex; cursor: pointer; align-items: center; gap: 4px; padding: 3px 8px 3px 5px;
     background: var(--card); color: var(--ink); border: 2px solid var(--go); border-radius: 999px; box-shadow: 0 2px 8px rgba(0,0,0,.2);
     font: 700 13px/1 "Plus Jakarta Sans", system-ui, sans-serif; white-space: nowrap; animation: pop .35s cubic-bezier(.3,1.4,.5,1) both; }
   .wchip.b1 { border-color: var(--care); } .wchip.b2 { border-color: var(--stop); }
   .wchip > svg { width: 17px; height: 17px; color: var(--moss); }
   .wchip .tg { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: #fff; font-size: 11px; }
   .wchip.b1 .tg { background: var(--care-text); } .wchip.b2 .tg { background: var(--stop-text); }
-  @keyframes pop { from { opacity: 0; transform: translateX(-50%) scale(.6); } }
+  @keyframes pop { from { opacity: 0; } }
   .wa { display: inline-flex; align-items: center; gap: 1px; font-weight: 700; }
   .wa svg { width: 14px; height: 14px; stroke-width: 2.6; transform: rotate(var(--r)); }
   .wa i { font-style: normal; }
@@ -289,7 +292,10 @@
   .cps .wa svg { width: 16px; height: 16px; }
   .pin-start { width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 4px solid #2d6a4f; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
   .pin-end { width: 18px; height: 18px; border-radius: 5px; background: #14382b; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
-  .pin-cafe { width: 30px; height: 30px; border-radius: 50%; background: #fff; border: 2px solid #8a5300; display: grid; place-items: center; font-size: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.3); }
+  .pin-cafe { width: 32px; height: 32px; border-radius: 50%; background: #fff; border: 2px solid #8a5300; display: grid; place-items: center; font-size: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.3); cursor: pointer; }
+  .pin-cafe.chain { width: 26px; height: 26px; font-size: 13px; border-color: #9aa59f; opacity: .9; }
+  .pin-cafe.stop { box-shadow: 0 0 0 3px rgba(138,83,0,.35), 0 1px 6px rgba(0,0,0,.3); }
+  .pin-start, .pin-end, .me { cursor: pointer; }
   .me { width: 18px; height: 18px; border-radius: 50%; background: #2d6a4f; border: 3px solid #fff; box-shadow: 0 0 0 0 rgba(45,106,79,.5); animation: ping 2s infinite; }
   @keyframes ping { 70% { box-shadow: 0 0 0 18px rgba(45,106,79,0); } 100% { box-shadow: 0 0 0 0 rgba(45,106,79,0); } }
 
@@ -374,11 +380,11 @@
 
 <button type="button" class="fab" id="here-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span>Safe to ride here?</span></button>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="logic.js?v=202610161120"></script>
-<script src="route.js?v=202610161120"></script>
-<script src="loop.js?v=202610161120"></script>
-<script src="app.js?v=202610161120"></script>
-<script src="ui.js?v=202610161120"></script>
+<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
+<script src="logic.js?v=202610161428"></script>
+<script src="route.js?v=202610161428"></script>
+<script src="loop.js?v=202610161428"></script>
+<script src="app.js?v=202610161428"></script>
+<script src="ui.js?v=202610161428"></script>
 </body>
 </html>
