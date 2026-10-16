@@ -577,6 +577,30 @@ function layoutChips() {
 
 // --- "Safe to ride here?" --------------------------------------------------------------
 
+// Trial of the Safe2Ride API (Cloudflare Worker). Open the site with ?api to add a card comparing
+// the API's verdict with the one worked out here in the browser. Normal visitors see nothing.
+const API = "https://safe2ride-api.safe2ride.workers.dev";
+const API_COMPARE = new URLSearchParams(location.search).has("api");
+
+async function compareWithApi(data, pos, mode) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = "<p>Checking with the Safe2Ride API…</p>";
+  body.append(card);
+  const h = data.hourly, mine = VERDICT[assess(h, mode, Math.min(PAST_HOURS, h.time.length - 1)).level].title;
+  try {
+    const t0 = performance.now();
+    const res = await fetch(`${API}/ride-check?lat=${pos.lat.toFixed(3)}&lon=${pos.lon.toFixed(3)}&mode=${mode}`);
+    const api = await res.json();
+    if (!res.ok) throw new Error(api.error || res.status);
+    const ms = Math.round(performance.now() - t0);
+    card.innerHTML = `<h2 class="ch">API trial</h2><p>This page: <b>${esc(mine)}</b> · API: <b>${esc(api.verdict)}</b> (${ms} ms)</p>`
+      + `<p>${api.verdict === mine ? "✓ They agree." : "⚠ They differ. The two forecasts were fetched separately, so they may have updated in between."}</p>`;
+  } catch (e) {
+    card.innerHTML = `<h2 class="ch">API trial</h2><p>⚠ Couldn't reach the API: ${esc(e.message)}</p>`;
+  }
+}
+
 $("here-btn").addEventListener("click", async () => {
   const b = $("here-btn");
   if (b.classList.contains("loading")) return;
@@ -593,6 +617,7 @@ $("here-btn").addEventListener("click", async () => {
     addMarker(div("me"), pos.lat, pos.lon, place ? `<b>You're near ${esc(place)}</b>` : "");
     $("intro").hidden = true;
     body.innerHTML = hereHtml(data, place, lim());
+    if (API_COMPARE) compareWithApi(data, pos, lim());
     countUp(body);
     setStatus("");
     setCollapsed(true, place ? `Riding near ${place}` : "Riding near you");
