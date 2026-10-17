@@ -31,17 +31,6 @@ async function fetchPlace(lat, lon) {
   } catch { return ""; }
 }
 
-// Longest run of "go" hours from `from` onwards. Returns { start, end } (end exclusive) or null.
-function bestWindow(levels, from) {
-  let best = null, start = null;
-  for (let i = from; i <= levels.length; i++) {
-    if (i < levels.length && levels[i] === 0) { if (start === null) start = i; continue; }
-    if (start !== null && (!best || i - start > best.end - best.start)) best = { start, end: i };
-    start = null;
-  }
-  return best;
-}
-
 // What's falling at hour i: null (dry), "rain", "sleet", "snow" or "freezing" (freezing rain/drizzle).
 // Open-Meteo snowfall is cm; 7 cm of snow ≈ 10 mm of water.
 function precipType(h, i) {
@@ -55,4 +44,4 @@ function compass(deg) { return Number.isFinite(deg) ? ["N", "NNE", "NE", "ENE", 
 
 function range(a, b) { return Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i); }
 
-export { PAST_HOURS, FORECAST_HOURS, WMO, WEATHER_VARS, fetchWeather, fetchPlace, bestWindow, precipType, compass, range };
+export { PAST_HOURS, FORECAST_HOURS, WMO, WEATHER_VARS, fetchWeather, fetchPlace, precipType, compass, range };

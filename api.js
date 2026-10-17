@@ -20,12 +20,6 @@ async function callApi(path, body) {
   return j;
 }
 
-// "Safe to ride here?" for Open-Meteo hourly data from fetchWeather():
-// { level, verdict, reasons, scores, summary, levels (1-hour verdict for every hour) }.
-function assessHere(hourly, mode) {
-  return callApi("/assess/here", { mode, hourly });
-}
-
 // Departure options along a route, shaped as the rest of the site expects: each point carries its
 // checkpoint and weather (pts[k].h, .at), each stretch links the points either side (segs[k].from, .to).
 // Replies are joined by their checkpoint index k, never by position in the list.
@@ -45,11 +39,31 @@ async function assessRoute(cps, wx, mode, now) {
 }
 
 // The AI-written "what to expect" paragraph for departure `dep` of a ride already checked with assessRoute()
-// (same checkpoints, weather and `now`). `route` is the facts from describe.js. Returns the text.
-async function describeRoute(cps, wx, mode, now, dep, route) {
-  const { text } = await callApi("/describe/route", { mode, now, tz: localTz(), cps: slimCps(cps), wx, dep, route });
-  if (typeof text !== "string" || !text) throw new Error("The Safe2Ride service had a problem. Please try again in a moment.");
+// (same checkpoints, weather and `now`). `route` is the facts from describe.js. It arrives as it's written:
+// `onText(soFar)` is called with the text so far each time more comes in. Returns the whole text.
+async function describeRoute(cps, wx, mode, now, dep, route, onText = () => {}) {
+  let res;
+  try {
+    res = await fetch(API + "/describe/route", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ v: API_VERSION, mode, now, tz: localTz(), cps: slimCps(cps), wx, dep, route, stream: true }) });
+  } catch {
+    throw new Error("Couldn't reach the Safe2Ride service. Check your connection and try again.");
+  }
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    if (res.status === 409 && j.code === "version") throw new Error("Safe2Ride has been updated. Please refresh the page.");
+    throw new Error(j.error || "The Safe2Ride service had a problem. Please try again in a moment.");
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let text = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += value;
+    onText(text);
+  }
+  if (!text.trim()) throw new Error("The Safe2Ride service had a problem. Please try again in a moment.");
   return text;
 }
 
-export { API_VERSION, assessHere, assessRoute, describeRoute };
+export { API_VERSION, assessRoute, describeRoute };

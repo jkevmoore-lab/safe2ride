@@ -70,12 +70,6 @@ function assessRoute(body) {
     scores: { ice: score("Very low", "Surface down to 11°C, dry roads"), rain: score("Staying dry", "5% chance"), wind: score("Calm", "Gusts up to 14 mph") },
     headD: 0, tailD: 0, pts, segs }] };
 }
-function assessHere(body) {
-  const score = (label) => ({ score: 0, label, detail: "" });
-  return { v: 2, time: body.hourly.time[6], level: 0, verdict: "Good to go", summary: "Dry for the next 12 hours.", reasons: [],
-    scores: { ice: score("Very low"), rain: score("Staying dry"), wind: score("Calm") }, levels: body.hourly.time.map(() => 0) };
-}
-
 // A page with the fakes in place. `opts.api` can replace the API's answers; `opts.routeDelay` holds BRouter's first answer back.
 async function openPage(hash = "", opts = {}) {
   const ctx = await browser.newContext({ geolocation: HOME, permissions: ["geolocation"], viewport: { width: 1200, height: 800 } });
@@ -101,9 +95,11 @@ async function openPage(hash = "", opts = {}) {
     if (r.request().method() === "OPTIONS") return r.fulfill({ status: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Allow-Methods": "POST" } });
     const body = JSON.parse(r.request().postData()), p = new URL(r.request().url()).pathname;
     calls.api.push({ path: p, body });
-    if (opts.api) { const [status, reply] = opts.api(p, body); return json(r, reply, status); }
-    if (p === "/describe/route") { calls.describe = (calls.describe || 0) + 1; return json(r, { v: 2, text: `A gentle ride from ${body.route.start} to ${body.route.end}.` }); }
-    return json(r, p === "/assess/here" ? assessHere(body) : assessRoute(body));
+    // A plain-text reply is the streamed AI briefing (see contract/v2.json).
+    const text = (route, t) => route.fulfill({ status: 200, contentType: "text/plain; charset=utf-8", headers: { "Access-Control-Allow-Origin": "*" }, body: t });
+    if (opts.api) { const [status, reply] = opts.api(p, body); return typeof reply === "string" ? text(r, reply) : json(r, reply, status); }
+    if (p === "/describe/route") { calls.describe = (calls.describe || 0) + 1; return text(r, `A gentle ride from ${body.route.start} to ${body.route.end}.`); }
+    return json(r, assessRoute(body));
   });
   await page.goto(base + "index.html" + hash);
   return { page, ctx, errors, calls };
@@ -111,19 +107,35 @@ async function openPage(hash = "", opts = {}) {
 
 // --- Tests ------------------------------------------------------------------------------
 
-test("Safe to ride here? shows the verdict for where you are", async () => {
-  const { page, ctx, errors, calls } = await openPage();
-  await page.click("#here-btn");
-  await page.waitForSelector(".verdict h2");
-  assert.equal(await page.textContent(".verdict h2"), "Good to go");
-  assert.match(await page.textContent(".verdict .place"), /Witney/);
-  assert.equal(calls.api[0].body.v, 2);
+test("the page opens on Loop, with no off-road or Safe to ride here? controls", async () => {
+  const { page, ctx, errors } = await openPage();
+  assert.equal(await page.getAttribute("#m-loop", "aria-pressed"), "true");
+  assert.ok(await page.locator("#loop-field").isVisible());
+  assert.equal(await page.locator("#opt-offroad, #here-btn").count(), 0);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test("off-road paths come with the bike: on for gravel and mountain bikes, off for road bikes", async () => {
+  const { page, ctx, errors } = await openPage();
+  const profiles = [];
+  page.on("request", (q) => { const m = /brouter\.de\/brouter\?.*profile=([^&]+)/.exec(q.url()); if (m) profiles.push(m[1]); });
+  await page.click("#m-ab");
+  await page.fill("#to", "Burford");
+  await page.click("#to-sug li");
+  await page.waitForSelector(".rdlg .rsum");
+  await page.selectOption("#bike", "gravel");
+  await page.waitForFunction(() => document.querySelector("#plan").textContent === "Update" && !document.querySelector("#plan").disabled);
+  await page.waitForTimeout(300);
+  assert.ok(profiles.at(-1) === "gravel", `gravel bikes route on the gravel profile (got ${profiles.at(-1)})`);
+  assert.match(decodeURIComponent(page.url()), /"o":"1110"/, "off-road is on in the share link");
   assert.deepEqual(errors, []);
   await ctx.close();
 });
 
 test("A → B: pick a destination and get a route with departure times", async () => {
   const { page, ctx, errors, calls } = await openPage();
+  await page.click("#m-ab");
   await page.fill("#to", "Burford");
   await page.click("#to-sug li");
   await page.waitForSelector(".rdlg .rsum");
@@ -140,6 +152,7 @@ test("A → B: pick a destination and get a route with departure times", async (
 
 test("the AI briefing is written straight away, once per departure, and never names home", async () => {
   const { page, ctx, errors, calls } = await openPage();
+  await page.click("#m-ab");
   await page.fill("#to", "Burford");
   await page.click("#to-sug li");
   await page.waitForSelector(".ai:not(.writing) p");
@@ -161,8 +174,9 @@ test("the AI briefing is written straight away, once per departure, and never na
 test("if the AI briefing fails, our own summary shows with a Try again", async () => {
   let fail = true;
   const { page, ctx, errors, calls } = await openPage("", { api: (p, body) => p === "/describe/route"
-    ? (fail ? [503, { error: "Route descriptions aren't available right now. Please try again later." }] : [200, { v: 2, text: "Second time lucky." }])
+    ? (fail ? [503, { error: "Route descriptions aren't available right now. Please try again later." }] : [200, "Second time lucky."])
     : [200, assessRoute(body)] });
+  await page.click("#m-ab");
   await page.fill("#to", "Burford");
   await page.click("#to-sug li");
   await page.waitForSelector("#ai-retry");
@@ -177,6 +191,7 @@ test("if the AI briefing fails, our own summary shows with a Try again", async (
 
 test("› finds a new route only when tapped; ‹ brings earlier ones back without asking again", async () => {
   const { page, ctx, errors, calls } = await openPage();
+  await page.click("#m-ab");
   await page.fill("#to", "Burford");
   await page.click("#to-sug li");
   await page.waitForSelector(".rdlg .rsum");
@@ -206,11 +221,12 @@ test("› finds a new route only when tapped; ‹ brings earlier ones back witho
 
 test("risk points: a pill on the card and a hazard tag on the map; the map has a route colour key", async () => {
   const { page, ctx, errors } = await openPage("", { api: (p, body) => {
-    if (p !== "/assess/route") return [200, { v: 2, text: "Windy in the middle." }];
+    if (p !== "/assess/route") return [200, "Windy in the middle."];
     const r = assessRoute(body), o = r.options[0];
     o.level = 1; o.pts[2] = { ...o.pts[2], level: 1, kinds: ["wind", "rain"] };
     return [200, r];
   } });
+  await page.click("#m-ab");
   await page.fill("#to", "Burford");
   await page.click("#to-sug li");
   await page.waitForSelector(".risk");
@@ -240,6 +256,7 @@ test("a share link with bad values opens safely with sensible defaults", async (
 
 test("changing a setting while a ride is planning re-plans with the new setting", async () => {
   const { page, ctx, errors, calls } = await openPage("", { routeDelay: 1500 });
+  await page.click("#m-ab");
   await page.fill("#to", "Burford");
   await page.click("#to-sug li");
   await page.waitForFunction(() => document.querySelector("#plan").disabled);
@@ -254,7 +271,9 @@ test("changing a setting while a ride is planning re-plans with the new setting"
 
 test("an out-of-date page is asked to refresh", async () => {
   const { page, ctx, errors } = await openPage("", { api: () => [409, { error: "Safe2Ride has been updated. Please refresh the page.", code: "version" }] });
-  await page.click("#here-btn");
+  await page.click("#m-ab");
+  await page.fill("#to", "Burford");
+  await page.click("#to-sug li");
   await page.waitForSelector("#status.error");
   assert.match(await page.textContent("#status"), /refresh the page/);
   assert.deepEqual(errors, []);

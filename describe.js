@@ -8,14 +8,15 @@ import { openAt } from "./loop.js";
 
 const SAMPLES = 10;
 
-const AT_A_TIME = 2;                       // Photon is a free service: don't hit it with all the lookups at once
+const AT_A_TIME = 3;                       // Photon is a free service: don't hit it with all the lookups at once
 const MINOR = new Set(["service", "track", "footway", "path", "steps"]);   // driveways, farm tracks: not worth naming
 
 // Towns and roads along the route, in order: the nearest street to evenly spaced points (Photon, OpenStreetMap data).
 // A road counts only if the point is inside its outline (plus ~30 m), so an unnamed path doesn't pick up one nearby.
-// A failed lookup is just a gap.
-// Returns { places, roads } with repeats removed. (Photon's "district" is the town or village; "city" is often the council.)
-async function routeNames(route, signal) {
+// A failed lookup is just a gap. (Photon's "district" is the town or village; "city" is often the council.)
+// Returns { done, now() }: `done` resolves when every lookup is in; `now()` gives { places, roads } found so far,
+// in route order with repeats removed, so the briefing needn't wait for a slow one.
+function routeNames(route, signal) {
   const pts = Array.from({ length: SAMPLES }, (_, k) => pointAt(route, route.distance * (k + 0.5) / SAMPLES));
   const lookup = async (p) => {
     try {
@@ -32,9 +33,11 @@ async function routeNames(route, signal) {
     }
   };
   const found = [];
-  for (let i = 0; i < pts.length; i += AT_A_TIME) found.push(...await Promise.all(pts.slice(i, i + AT_A_TIME).map(lookup)));
+  const done = (async () => {
+    for (let i = 0; i < pts.length; i += AT_A_TIME) await Promise.all(pts.slice(i, i + AT_A_TIME).map(async (p, j) => { found[i + j] = await lookup(p); }));
+  })().catch(() => {});
   const uniq = (xs) => xs.filter((x, i) => x && xs.indexOf(x) === i);
-  return { places: uniq(found.map((f) => f?.place)), roads: uniq(found.map((f) => f?.road)) };
+  return { done, now: () => ({ places: uniq(found.map((f) => f?.place)), roads: uniq(found.map((f) => f?.road)) }) };
 }
 
 // A place's name as the API may see it: the rider's own location becomes the nearest town (or nothing).

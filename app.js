@@ -1,6 +1,6 @@
 // Safe2Ride shared page helpers: icons, cards, charts, the "Safe to ride here?" check and "How we decide".
 
-import { PAST_HOURS, WMO, bestWindow, precipType, compass } from "./logic.js";
+import { PAST_HOURS, precipType, compass } from "./logic.js";
 import { SURFACES, SURFACE_FIT } from "./route.js";
 
 const ICONS = {
@@ -156,45 +156,6 @@ function countUp(root = $("panel-body")) {
   setTimeout(() => els.forEach((el) => el.textContent = el.dataset.to), 500 + dur + 100);
 }
 
-// Results of "Safe to ride here?" as cards. `mode` = "bicycle" or "motorbike";
-// `a` is the API's assessment of this weather (see assessHere in api.js).
-function hereHtml(data, place, mode, a) {
-  const h = data.hourly, n = h.time.length, now = Math.min(PAST_HOURS, n - 1);
-  const { level, reasons, levels } = a;
-  const win = bestWindow(levels, now);
-  const hhmm = (i) => h.time[i].slice(11, 16);
-  const who = mode === "bicycle" ? "cycle" : "ride your motorbike";
-  const V = VERDICT[level];
-  const text = [`Conditions look fine to ${who}.`, `You can ${who}, but conditions need extra care.`, `We'd advise against choosing to ${who} right now.`][level];
-  let bestHtml;
-  if (!win) bestHtml = `<b>No clear window in the next 12 hours</b><small>Every hour has at least one hazard, so check the reasons below.</small>`;
-  else if (win.start === now) bestHtml = `<b>Good now until ${win.end >= n ? "at least " + hhmm(n - 1) : hhmm(win.end)}</b><small>Clear riding conditions from right now.</small>`;
-  else bestHtml = `<b>Best time to ride: ${hhmm(win.start)}–${win.end >= n ? hhmm(n - 1) + "+" : hhmm(win.end)}</b><small>The longest stretch of clear conditions ahead.</small>`;
-  let k = 0;
-  const card = (cls, inner) => `<div class="card reveal ${cls}" style="--i:${k++}">${inner}</div>`;
-  return card(`verdict ${V.cls}`, `${badge(level)}
-      <div><h2>${V.title}</h2><p>${text}</p><p class="summary">${esc(a.summary)}</p>
-        ${place ? `<span class="place">${svg("pin")}${esc(place)}</span>` : ""}
-        <small class="disc">Guidance only: use your own judgement on the road.</small></div>`)
-    + card("", `<h2 class="ch">Ride window</h2>
-      <div class="best"><span class="ico">${svg("clock")}</span><span>${bestHtml}</span></div>
-      <div class="hours-wrap">${rainChart(h, now)}<div class="hours">${h.time.map((_, i) => {
-        const b = wxBits(h, i);
-        return `<div class="hour ${i < now ? "past" : ""} ${i === now ? "now" : ""}" title="${VERDICT[levels[i]].title}: ${WMO[h.weather_code[i]] ?? ""}">
-          <span class="t">${i === now ? "Now" : hhmm(i)}</span>${svg(b.icon)}<b>${b.temp}°</b>${lvPill(levels[i], i)}</div>`;
-      }).join("")}</div></div>
-      <div class="chart-key"><span class="kr">Rain (mm per hour)</span><span class="kg">Gusts (mph)</span><span>Faded = last ${PAST_HOURS} hours</span></div>${legend()}`)
-    + card("", `<h2 class="ch">Risk scores · next 3 hours <a href="#how">How we score</a></h2>${scoreTiles(a.scores)}`)
-    + card("", `<h2 class="ch">Why</h2>${reasonList(reasons, "No weather hazards found for the next 3 hours.")}`)
-    + card("quiet", `<h2 class="ch">Right now · ${WMO[h.weather_code[now]] ?? ""}</h2><div class="stats">
-        <div class="stat">${svg("temp")}<small>Air · feels like</small><strong>${num(h.temperature_2m[now])}°</strong> <em>${num(h.apparent_temperature[now])}°</em></div>
-        <div class="stat">${svg("ice")}<small>Road surface</small><strong>${num(h.soil_temperature_0cm[now])}°C</strong></div>
-        <div class="stat">${svg("wind")}<small>Wind · gusts</small><strong>${num(h.wind_speed_10m[now])}</strong> <em>${num(h.wind_gusts_10m[now])} mph from the ${compass(h.wind_direction_10m[now])}</em></div>
-        <div class="stat">${svg("drop")}<small>Rain now · last ${PAST_HOURS}h</small><strong>${num(h.precipitation[now], 1)}</strong> <em>${h.precipitation.slice(0, now).reduce((a, b) => a + (b ?? 0), 0).toFixed(1)} mm</em></div>
-        <div class="stat">${svg("eye")}<small>Visibility</small><strong>${h.visibility[now] >= 10000 ? "10+" : num(h.visibility[now] / 1000, 1)}</strong> <em>km</em></div>
-      </div>`);
-}
-
 // "How we decide". The weather thresholds and scoring live in the private Safe2Ride API, so this
 // describes them in words; the surface table is still built from the same tables the routing uses.
 function renderHow() {
@@ -223,4 +184,4 @@ function renderHow() {
     <p>Safe2Ride is guidance only: it can't see the road in front of you.</p>`;
 }
 
-export { svg, VERDICT, weatherIcon, $, store, setStatus, esc, num, getPosition, lvPill, wxBits, scoreTiles, reasonList, countUp, hereHtml, renderHow };
+export { svg, VERDICT, weatherIcon, $, store, setStatus, esc, num, getPosition, lvPill, wxBits, scoreTiles, reasonList, countUp, renderHow };

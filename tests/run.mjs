@@ -118,20 +118,32 @@ test("checkpoints span the route", () => {
     if (/bigdatacloud/.test(url)) return Response.json({ locality: "Witney" });
     return Response.json({ v: 2, text: "A gentle ride." });
   };
-  const names = await S.routeNames(route);
+  const lookups = S.routeNames(route);
+  const early = lookups.now();
+  await lookups.done;
+  const names = lookups.now();
   const mine = await S.publicName({ name: "Your location", lat: 51.7856, lon: -1.4857 });
   const named = await S.publicName({ name: "Burford", lat: 51.8, lon: -1.6 });
   const dep = Date.UTC(2026, 9, 17, 9, 0) / 1000;
   const facts = S.rideFacts(trip, { dep }, names, mine, named);
   asked.length = 0;
   let sent;
-  globalThis.fetch = async (url, init) => { sent = { url, ...JSON.parse(init.body) }; return Response.json({ v: 2, text: "A gentle ride." }); };
-  const text = await S.describeRoute([{ lat: 1, lon: 2, t: 0, dist: 0, h: {}, gi: 4 }], [{ time: [1] }], "bicycle", dep - 60, dep, facts);
+  // The API streams the text back as it's written: three pieces here.
+  globalThis.fetch = async (url, init) => {
+    sent = { url, ...JSON.parse(init.body) };
+    const enc = new TextEncoder();
+    return new Response(new ReadableStream({ start(c) { ["A gentle", " ride", "."].forEach((x) => c.enqueue(enc.encode(x))); c.close(); } }));
+  };
+  const seen = [];
+  const text = await S.describeRoute([{ lat: 1, lon: 2, t: 0, dist: 0, h: {}, gi: 4 }], [{ time: [1] }], "bicycle", dep - 60, dep, facts, (t) => seen.push(t));
+  globalThis.fetch = async () => new Response("");
+  const empty = await S.describeRoute([], [], "bicycle", 0, 0, facts).catch((e) => e.message);
   globalThis.fetch = async () => Response.json({ error: "Route descriptions aren't available right now. Please try again later." }, { status: 503 });
   const off = await S.describeRoute([], [], "bicycle", 0, 0, facts).catch((e) => e.message);
   globalThis.fetch = saved;
   test("towns and roads along the route come out in order, without repeats, gaps, councils or driveways", () => {
     assert.deepEqual(names, { places: ["Witney", "Burford"], roads: ["Burford Road", "B4047"] });
+    assert.deepEqual(early, { places: [], roads: [] }, "what's found so far is there to use before they're all in");
   });
   test("your own location is sent only as the nearest town", () => {
     assert.equal(mine, "Witney");
@@ -151,7 +163,10 @@ test("checkpoints span the route", () => {
     assert.match(sent.url, /\/describe\/route$/);
     assert.deepEqual(Object.keys(sent).filter((k) => k !== "url"), contract.request);
     assert.deepEqual(Object.keys(sent.cps[0]), ["lat", "lon", "t", "dist"]);
+    assert.equal(sent.stream, true);
     assert.equal(text, "A gentle ride.");
+    assert.deepEqual(seen, ["A gentle", "A gentle ride", "A gentle ride."], "shown as it arrives");
+    assert.match(empty, /had a problem/, "an empty reply is a failure");
   });
   test("when descriptions are switched off the rider is told so", () => assert.match(off, /aren't available/));
 }

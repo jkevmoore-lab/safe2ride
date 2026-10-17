@@ -106,15 +106,12 @@
   .search-mini b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .search-mini span { color: var(--moss); font-weight: 700; font-size: .875rem; }
   .top.collapsed .search { display: none; }
-  .top.collapsed .search-mini { display: flex; }
+  .top.collapsed { display: flex; gap: 8px; }
+  .top.collapsed .search-mini { display: flex; flex: 1; min-width: 0; }
+  .mini-brand { display: none; flex: none; place-items: center; width: 52px; height: 52px; border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow); }
+  .mini-brand svg { width: 34px; height: 34px; }
+  .top.collapsed .mini-brand { display: grid; }
 
-  /* "Safe to ride here?" floating button */
-  .fab { position: fixed; z-index: 450; right: 12px; bottom: calc(var(--peek) + 14px + env(safe-area-inset-bottom, 0px)); display: inline-flex; align-items: center; gap: 8px;
-    border: 0; border-radius: 999px; padding: 12px 16px; min-height: 48px; background: var(--forest); color: var(--sand); font-weight: 800; box-shadow: var(--shadow); cursor: pointer; }
-  .fab svg { width: 20px; height: 20px; }
-  body[data-sheet="half"] .fab, body[data-sheet="full"] .fab { display: none; }
-  @media (min-width: 900px) { body[data-sheet] .fab { display: inline-flex; } }
-  .fab.loading { opacity: .8; cursor: wait; }
 
   /* ---- Results panel: a bottom sheet on phones ---- */
   .panel { position: fixed; z-index: 400; left: 0; right: 0; bottom: 0; height: calc(100dvh - 70px); background: var(--sand);
@@ -145,7 +142,6 @@
     .panel { position: static; flex: 1; min-height: 0; height: auto; transform: none !important; border-radius: 0; box-shadow: none; background: transparent; }
     .grab { display: none; }
     .panel-scroll, .panel[data-state="half"] .panel-scroll { padding-top: 12px; padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
-    .fab { bottom: 20px; right: 20px; }
   }
 
   /* ---- Cards and results ---- */
@@ -198,6 +194,8 @@
   .arr:disabled { opacity: .3; cursor: default; }
   .rsum { margin: 0 0 8px; font-size: .9375rem; font-weight: 600; }
   .ai.writing p { color: var(--muted); }
+  .ai.live p::after { content: "▍"; color: var(--moss); animation: blink 1s steps(2) infinite; margin-left: 1px; }
+  @keyframes blink { 50% { opacity: 0; } }
   .ai.writing p::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: dots 1.2s steps(4) infinite; }
   @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
   .ai .retry { margin-left: 6px; border: 0; background: none; color: var(--moss); font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; padding: 0; }
@@ -355,6 +353,7 @@
 
 <div class="side">
   <div class="top" id="top">
+    <a class="mini-brand" href="/" aria-label="Safe2Ride home"><svg viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="12" fill="#14382b"/><path d="M8 27c5-9 9 2 14-6s8-6 10-8" fill="none" stroke="#a4d65e" stroke-width="3.2" stroke-linecap="round"/><circle cx="32" cy="13" r="3.4" fill="#fff"/></svg></a>
     <button type="button" class="search-mini" id="search-mini" aria-label="Edit ride"><b id="search-mini-text">Plan a ride</b><span>Edit</span></button>
     <div class="search" role="search">
       <div class="brandrow">
@@ -386,7 +385,6 @@
       <div class="chips" role="group" aria-label="Ride options">
         <label class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5.5" cy="16.5" r="3.5"/><circle cx="18.5" cy="16.5" r="3.5"/><path d="M5.5 16.5 9 9h6l3.5 7.5M9 9l3 7.5h-6.5M14 5h2.5L15 9"/></svg>
           <select id="bike" aria-label="Bike type"><option value="road">Road bike</option><option value="gravel">Gravel / hybrid</option><option value="mtb">Mountain bike</option><option value="motorbike">Motorbike</option></select></label>
-        <label class="chip" data-cycle><input type="checkbox" id="opt-offroad">Allow off-road</label>
         <label class="chip" data-cycle><input type="checkbox" id="opt-cafe" checked>Café stop</label>
       </div>
     </div>
@@ -398,7 +396,7 @@
       <p id="status" role="status" aria-live="polite"></p>
       <div class="intro" id="intro">
         <h2>Where are you riding today?</h2>
-        <p>Search for a destination, choose <b>Loop</b> for a round ride, or tap <b>Safe to ride here?</b> We check the weather along the way and how cycle-friendly the roads are. <a href="#how">How we decide</a></p>
+        <p>Choose how far you'd like to ride for a round <b>Loop</b>, or <b>A → B</b> to head somewhere. We check the weather along the way and how cycle-friendly the roads are. <a href="#how">How we decide</a></p>
       </div>
       <div id="panel-body"></div>
       <details class="card how" id="how"><summary>How we decide</summary><div id="how-body"></div></details>
@@ -410,23 +408,22 @@
   </section>
 </div>
 
-<button type="button" class="fab" id="here-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span>Safe to ride here?</span></button>
 
 <script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js" integrity="sha384-81ppUWZZO+pveTPk4qU9cZuScEFULHfuOMHVJHFZ7xVBlWQTG1zsPrVIMGAl1WMb" crossorigin="anonymous"></script>
 <!-- Our scripts are modules; this map gives each one a version so browsers never mix cached and new files.
      The pre-commit hook (.githooks/pre-commit) bumps every ?v= here when a .js file changes. -->
 <script type="importmap">
 { "imports": {
-  "./logic.js": "./logic.js?v=202610171121",
-  "./route.js": "./route.js?v=202610171121",
-  "./loop.js": "./loop.js?v=202610171121",
-  "./api.js": "./api.js?v=202610171121",
-  "./share.js": "./share.js?v=202610171121",
-  "./app.js": "./app.js?v=202610171121",
-  "./map.js": "./map.js?v=202610171121",
-  "./render.js": "./render.js?v=202610171121",
-  "./describe.js": "./describe.js?v=202610171121",
-  "./ui.js": "./ui.js?v=202610171121"
+  "./logic.js": "./logic.js?v=202610171141",
+  "./route.js": "./route.js?v=202610171141",
+  "./loop.js": "./loop.js?v=202610171141",
+  "./api.js": "./api.js?v=202610171141",
+  "./share.js": "./share.js?v=202610171141",
+  "./app.js": "./app.js?v=202610171141",
+  "./map.js": "./map.js?v=202610171141",
+  "./render.js": "./render.js?v=202610171141",
+  "./describe.js": "./describe.js?v=202610171141",
+  "./ui.js": "./ui.js?v=202610171141"
 } }
 </script>
 <script type="module">import "./ui.js";</script>

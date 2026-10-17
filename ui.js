@@ -5,11 +5,11 @@ import { PAST_HOURS, fetchWeather, fetchPlace } from "./logic.js";
 import { SURFACE, SURFACE_FIT, routeCalls, searchPlaces, fetchRoute, makeCheckpoints, fetchElevation, fetchRouteWeather, forecastHoursFor,
   cycleProfile, fetchCycleRoute, surfaceStats, haversine, destPoint, bearing } from "./route.js";
 import { cafesOnRoute, planLoop, loopAt, similarity, addCafeStop } from "./loop.js";
-import { assessHere, assessRoute, describeRoute } from "./api.js";
+import { assessRoute, describeRoute } from "./api.js";
 import { routeNames, publicName, rideFacts } from "./describe.js";
 import { BIKES, shareHash, parseShare } from "./share.js";
-import { $, store, setStatus, esc, getPosition, countUp, hereHtml, renderHow } from "./app.js";
-import { map, mapReady, ROUTE_LAYERS, isWide, popup, fitTo, clearMap, drawTrip, showPoint, placeKey, me, showMe, followMe, askCompass } from "./map.js";
+import { $, store, setStatus, esc, getPosition, countUp, renderHow } from "./app.js";
+import { map, mapReady, ROUTE_LAYERS, isWide, popup, fitTo, drawTrip, showPoint, placeKey, me, followMe, askCompass } from "./map.js";
 import { BIKE_NAME, rideTitle, tripHtml, aiBox, pointHazard, cafePopup } from "./render.js";
 
 const panel = $("panel"), body = $("panel-body"), planBtn = $("plan"), fromIn = $("from"), toIn = $("to");
@@ -43,26 +43,25 @@ map.on("click", (e) => {
 
 // --- Settings (remembered between visits) -----------------------------------------------
 
-const prefs = { ride: "ab", bike: "road", offroad: false, cafe: true, miles: 25, ...store.get("prefs", {}) };
+// The page always opens on Loop (a share link can say otherwise); the bike, café stop and loop length are remembered.
+const prefs = { bike: "road", cafe: true, miles: 25, ...store.get("prefs", {}), ride: "loop" };
 if (!BIKES.includes(prefs.bike)) prefs.bike = "road";
-// Busy roads are always avoided and there's no "prefer flat" any more (both still written in share links, for older pages).
-const fixedPrefs = () => Object.assign(prefs, { busy: true, flat: false });
+// Set for you, not chosen: busy roads are always avoided, off-road paths come with gravel and mountain bikes,
+// and there's no "prefer flat". All three are still written in share links, for older pages.
+const fixedPrefs = () => Object.assign(prefs, { busy: true, flat: false, offroad: prefs.bike === "gravel" || prefs.bike === "mtb" });
 fixedPrefs();
 const savePrefs = () => store.set("prefs", prefs);
-const lim = () => (prefs.bike === "motorbike" ? "motorbike" : "bicycle");
 
 function showPrefs() {
   $("bike").value = prefs.bike;
-  $("opt-offroad").checked = prefs.offroad; $("opt-cafe").checked = prefs.cafe;
+  $("opt-cafe").checked = prefs.cafe;
   $("loop-len").value = prefs.miles;
 }
 showPrefs();
 
 function syncControls() {
-  const moto = prefs.bike === "motorbike", road = prefs.bike === "road";
+  const moto = prefs.bike === "motorbike";
   document.querySelectorAll("[data-cycle]").forEach((c) => (c.hidden = moto));
-  $("opt-offroad").disabled = road;
-  if (road) $("opt-offroad").checked = prefs.offroad = false;
   $("m-loop").disabled = moto;
   if (moto && prefs.ride === "loop") setRide("ab");
   $("m-loop").title = moto ? "Loops are for bicycles" : "";
@@ -78,12 +77,10 @@ $("m-ab").addEventListener("click", () => setRide("ab"));
 $("m-loop").addEventListener("click", () => setRide("loop"));
 $("bike").addEventListener("change", (e) => {
   prefs.bike = e.target.value;
-  if (prefs.bike === "gravel" || prefs.bike === "mtb") $("opt-offroad").checked = prefs.offroad = true;
-  savePrefs(); syncControls(); if (trip || busy) plan();
+  fixedPrefs(); savePrefs(); syncControls(); if (trip || busy) plan();
 });
 // A change re-plans the ride on show, or the one being planned right now.
-[["opt-offroad", "offroad"], ["opt-cafe", "cafe"]].forEach(([id, k]) =>
-  $(id).addEventListener("change", (e) => { prefs[k] = e.target.checked; savePrefs(); if (trip || busy) plan(); }));
+$("opt-cafe").addEventListener("change", (e) => { prefs.cafe = e.target.checked; savePrefs(); if (trip || busy) plan(); });
 $("loop-len").addEventListener("input", (e) => { prefs.miles = +e.target.value; $("loop-out").textContent = `${prefs.miles} mi`; });
 $("loop-len").addEventListener("change", savePrefs);
 setRide(prefs.ride); syncControls();
@@ -241,6 +238,7 @@ async function plan() {
   if (id === null) return setStatus("Updating with your latest choices…");
   if (!fromSel) askCompass();
   setBusy(true, "Finding the way…");
+  fixedPrefs();
   const bike = prefs.bike, opts = { avoidBusy: true, offroad: prefs.offroad, cafe: prefs.cafe, flat: false };
   try {
     const from = fromSel || (fromIn.value.trim() ? (fromSel = await resolvePlace(fromIn, null, fromAc)) : await getPosition());
@@ -290,6 +288,9 @@ async function analyse(option, ctx, k) {
   if (route.distance < 300) throw new Error("Your start and destination are too close together to plan a ride.");
   if (route.duration > 24 * 3600) throw new Error("That ride is over 24 hours long. Try planning it in stages.");
   setBusy(true, "Reading the sky…");
+  // The AI briefing's towns and roads are looked up now, alongside the weather, so it can start the moment the ride shows.
+  const names = routeNames(route);
+  const endsP = Promise.all([publicName(ctx.from), publicName(ctx.to)]).catch(() => ["", ""]);
   const cps = makeCheckpoints(route);
   const [wx, elev] = await Promise.all([fetchRouteWeather(cps, forecastHoursFor(route)),
     route.ele ? Promise.resolve(elevFromRoute(route)) : fetchElevation(route).catch(() => null)]);
@@ -297,7 +298,7 @@ async function analyse(option, ctx, k) {
   if (!p.options.length) throw new Error("That ride is longer than the forecast covers. Try a shorter route.");
   const cafes = option.cafeList?.length ? cafesOnRoute(route, option.cafeList, now) : [];
   if (option.cafe && !cafes.some((c) => c.name === option.cafe.name)) cafes.push(...cafesOnRoute(route, [option.cafe], now, 400));
-  return { ...ctx, ...p, now, descs: {}, descErr: {}, descBusy: {}, names: null, lastChosen: 0, option, route, cps, elev, alt: k, cafes: cafes.sort((a, b) => a.dist - b.dist),
+  return { ...ctx, ...p, now, descs: {}, descErr: {}, descBusy: {}, descLive: {}, names, endsP, lastChosen: 0, option, route, cps, elev, alt: k, cafes: cafes.sort((a, b) => a.dist - b.dist),
     stats: route.cls ? surfaceStats(route, ctx.bike) : null };
 }
 
@@ -418,6 +419,7 @@ function renderTrip(first, fit) {
 // If it can't be written, our own few sentences are shown instead, with a "Try again".
 
 let describeTimer = null;
+const NAMES_WAIT = 800;    // ms
 function autoDescribe(delay) {
   clearTimeout(describeTimer);
   const t = trip, k = chosen;
@@ -432,14 +434,23 @@ async function describeTrip(t, k) {
   delete t.descErr[k];
   showAi(t, k);
   try {
-    const names = t.names || (t.names = await routeNames(t.route));
-    const [start, end] = await Promise.all([publicName(t.from), publicName(t.to)]);
+    // Names still being looked up by now are left out rather than waited for (the free lookup can be slow).
+    const soon = (p, fallback) => Promise.race([p, new Promise((r) => setTimeout(() => r(fallback), NAMES_WAIT))]);
+    const [, [start, end]] = await Promise.all([soon(t.names.done), soon(t.endsP, ["", ""])]);
+    const names = t.names.now();
     const wx = t.cps.map((_, i) => o.pts[i].h);
-    t.descs[k] = await describeRoute(t.cps, wx, t.bike === "motorbike" ? "motorbike" : "bicycle", t.now, o.dep, rideFacts(t, o, names, start, end));
+    // Shown word by word as it's written.
+    const live = (text) => {
+      t.descLive[k] = text;
+      const box = trip === t && chosen === k && $("ai");
+      if (box) { box.className = "ai live"; box.querySelector("p").textContent = text; }
+    };
+    t.descs[k] = await describeRoute(t.cps, wx, t.bike === "motorbike" ? "motorbike" : "bicycle", t.now, o.dep, rideFacts(t, o, names, start, end), live);
   } catch (e) {
     t.descErr[k] = `${e.message || "The AI briefing isn't available right now."} Here's our own summary instead.`;
   } finally {
     t.descBusy[k] = false;
+    delete t.descLive[k];
     showAi(t, k);
   }
 }
@@ -452,44 +463,5 @@ function showAi(t, k) {
 function wireRetry(t, k) {
   $("ai-retry")?.addEventListener("click", () => { delete t.descErr[k]; describeTrip(t, k); });
 }
-
-// --- "Safe to ride here?" --------------------------------------------------------------
-
-async function checkHere() {
-  const b = $("here-btn");
-  if (b.classList.contains("loading")) return;
-  const id = startJob(checkHere);
-  if (id === null) return;
-  b.classList.add("loading"); b.querySelector("span").textContent = "Checking…";
-  setStatus("Finding you…");
-  try {
-    askCompass();
-    const pos = await getPosition();
-    showMe(pos.lat, pos.lon); followMe();
-    store.set("lastCentre", [+pos.lat.toFixed(3), +pos.lon.toFixed(3)]);
-    setStatus("Reading the sky…");
-    const [data, place] = await Promise.all([fetchWeather(pos.lat, pos.lon), fetchPlace(pos.lat, pos.lon)]);
-    const a = await assessHere(data.hourly, lim());
-    if (stale(id)) return;
-    trip = null; routes = [];
-    clearMap();
-    me.note = place ? `<b>You're near ${esc(place)}</b>` : "";
-    $("intro").hidden = true;
-    body.innerHTML = hereHtml(data, place, lim(), a);
-    countUp(body);
-    setStatus("");
-    setCollapsed(true, place ? `Riding near ${place}` : "Riding near you");
-    setSheet("half");
-    fitTo([[pos.lat - 0.02, pos.lon - 0.03], [pos.lat + 0.02, pos.lon + 0.03]], 14);
-  } catch (e) {
-    if (stale(id)) return;
-    setStatus(e.message && !/^weather/.test(e.message) ? e.message : "Couldn't fetch the weather right now. Please try again in a moment.", true);
-    setSheet("half");
-  } finally {
-    b.classList.remove("loading"); b.querySelector("span").textContent = "Safe to ride here?";
-    endJob();
-  }
-}
-$("here-btn").addEventListener("click", checkHere);
 
 renderHow();

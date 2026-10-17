@@ -23,7 +23,8 @@
     },
     "POST /describe/route": {
       "about": "An AI-written 'what to expect' paragraph. Called only when the rider taps Description. cps, wx, now and tz as for /assess/route; dep is the departure shown. The API re-runs the rules itself. Names are cleaned and shortened; the rider's own address is never sent (start is an area name).",
-      "request": ["v", "mode", "now", "tz", "cps", "wx", "dep", "route"],
+      "request": ["v", "mode", "now", "tz", "cps", "wx", "dep", "route", "stream"],
+      "stream": "optional. true: the reply is the paragraph as plain text (not JSON), sent piece by piece as it's written; an empty reply means it failed. Errors before it starts are JSON as usual.",
       "route": ["kind", "bike", "distanceM", "durationS", "climbM", "start", "end", "places", "roads", "surfaces", "issues", "hills", "cafes"],
       "surfaces": "percent of the distance per class: quiet, path, busy, g1, g2, g3, unknown",
       "issue": ["kind", "level", "mile", "lengthMiles"],

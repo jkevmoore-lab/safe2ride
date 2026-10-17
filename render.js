@@ -79,6 +79,8 @@ function aiBox(trip, chosen) {
   const text = trip.descs?.[chosen], err = trip.descErr?.[chosen];
   if (text) return `<div class="ai" id="ai" aria-live="polite"><p>${esc(text)}</p><small>Written by AI from this route and forecast. It can get things wrong: the verdict and details above come first.</small></div>`;
   if (err) return `<div class="ai" id="ai" aria-live="polite"><p>${describe(trip, trip.options[chosen], chosen)}</p><small>${esc(err)} <button type="button" class="retry" id="ai-retry">Try again</button></small></div>`;
+  const live = trip.descLive?.[chosen];
+  if (live) return `<div class="ai live" id="ai" aria-live="polite"><p>${esc(live)}</p></div>`;
   return `<div class="ai writing" id="ai" aria-live="polite"><p>Writing your ride briefing</p></div>`;
 }
 
