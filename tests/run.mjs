@@ -156,6 +156,32 @@ test("checkpoints span the route", () => {
   test("when descriptions are switched off the rider is told so", () => assert.match(off, /aren't available/));
 }
 
+console.log("Finding more routes");
+{
+  const line = (pts) => { const coords = pts, cumD = [0]; for (let i = 1; i < coords.length; i++) cumD.push(cumD[i - 1] + S.haversine(coords[i - 1], coords[i])); return { coords, cumD, cumT: cumD, distance: cumD.at(-1), duration: cumD.at(-1) }; };
+  const east = line([[51.78, -1.50], [51.78, -1.45], [51.78, -1.40]]);
+  const bowed = line([[51.78, -1.50], [51.80, -1.45], [51.78, -1.40]]);
+  test("a route is the same as another when it runs along it, different when it goes its own way", () => {
+    assert.ok(S.similarity(east, east) > 0.99);
+    assert.ok(S.similarity(bowed, east) < 0.3);
+  });
+  const saved = globalThis.fetch;
+  let asked;
+  globalThis.fetch = async (url) => {
+    asked = String(url);
+    return Response.json({ code: "Ok", routes: [{ distance: 2000, duration: 120, geometry: { coordinates: [[-1.5, 51.78], [-1.49, 51.78], [-1.48, 51.79], [-1.47, 51.79]] },
+      legs: [{ annotation: { distance: [700, 300], duration: [40, 20] } }, { annotation: { distance: [1000], duration: [60] } }] }] });
+  };
+  const moto = await S.fetchRoute([{ lat: 51.78, lon: -1.5 }, { lat: 51.79, lon: -1.48 }, { lat: 51.79, lon: -1.47 }], "motorbike");
+  globalThis.fetch = saved;
+  test("a motorbike route through a via point joins its legs up end to end", () => {
+    assert.match(asked, /-1\.5,51\.78;-1\.48,51\.79;-1\.47,51\.79\?/);
+    assert.deepEqual(moto.cumD, [0, 700, 1000, 2000]);
+    assert.deepEqual(moto.cumT, [0, 40, 60, 120]);
+    assert.equal(moto.coords.length, 4);
+  });
+}
+
 console.log("Shared contract with the API");
 {
   const contract = JSON.parse(fs.readFileSync(new URL("../contract/v2.json", import.meta.url), "utf8"));
@@ -323,7 +349,7 @@ if (process.argv.includes("--live")) {
   const places = await S.searchPlaces("Burford", [51.8, -1.5]);
   test("search finds Burford, Oxfordshire first", () => assert.match(places[0].label, /Burford, .*Oxfordshire/));
   for (const mode of ["bicycle", "motorbike"]) {
-    const r = await S.fetchRoute({ lat: 51.7856, lon: -1.4857 }, places[0], mode);
+    const r = await S.fetchRoute([{ lat: 51.7856, lon: -1.4857 }, places[0]], mode);
     const c = S.makeCheckpoints(r);
     const wx = await S.fetchRouteWeather(c, S.forecastHoursFor(r));
     const plan = await S.assessRoute(c, wx, mode, Math.floor(Date.now() / 1000));

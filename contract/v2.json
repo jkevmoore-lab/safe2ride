@@ -17,7 +17,8 @@
       "checkpoint": ["lat", "lon", "t", "dist"],
       "response": ["v", "best", "options"],
       "option": ["dep", "arrive", "level", "cost", "reasons", "scores", "summary", "headD", "tailD", "pts", "segs"],
-      "point": ["k", "at", "eta", "level"],
+      "point": ["k", "at", "eta", "level", "kinds"],
+      "kinds": "hazard kinds at that point, worst first (reasons' kind values with level above 0)",
       "segment": ["k", "dist", "hours", "level", "head", "crossGust", "rain"]
     },
     "POST /describe/route": {

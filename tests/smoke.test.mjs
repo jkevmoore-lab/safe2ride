@@ -48,16 +48,22 @@ function forecast(url) {
   }
   return { timezone: "Europe/London", hourly: hourly(Array.from({ length: n }, (_, i) => new Date((t0 + i * 3600) * 1000).toISOString().slice(0, 16))) };
 }
-// A straight 10-mile ride east along a quiet road, as BRouter would answer.
-function brouterRoute(from) {
-  const n = 41, coords = Array.from({ length: n }, (_, i) => [from.lon + i * 0.0058, from.lat, 90 + i]);
+// A ride along a quiet road through the given [lon, lat] points, as BRouter would answer. Alternative `alt` bows out
+// to the north by alt × 0.01°, so each alternative is a different route.
+function brouterRoute(pts, alt = 0) {
+  if (pts.length === 1) pts = [pts[0], [pts[0][0] + 0.232, pts[0][1]]];
+  const n = 41, legs = pts.length - 1;
+  const coords = Array.from({ length: n }, (_, i) => {
+    const f = i / (n - 1) * legs, j = Math.min(legs - 1, Math.floor(f)), u = f - j, [a, b] = [pts[j], pts[j + 1]];
+    return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u + alt * 0.01 * Math.sin(Math.PI * i / (n - 1)), 90 + i];
+  });
   return { features: [{ properties: { messages: [["Longitude", "Latitude", "WayTags"], ...coords.slice(1).map(([lo, la]) => [String(Math.round(lo * 1e6)), String(Math.round(la * 1e6)), "highway=unclassified surface=asphalt"])],
     times: coords.map((_, i) => i * 60), "total-time": String(40 * 60), "filtered ascend": "40" }, geometry: { coordinates: coords } }] };
 }
 // What the Safe2Ride API answers (see contract/v2.json): one departure option, everything clear.
 function assessRoute(body) {
   const cps = body.cps;
-  const pts = cps.map((c, k) => ({ k, at: 6, eta: body.now + c.t, level: 0 }));
+  const pts = cps.map((c, k) => ({ k, at: 6, eta: body.now + c.t, level: 0, kinds: [] }));
   const segs = cps.slice(1).map((c, k) => ({ k, dist: c.dist - cps[k].dist, hours: (c.t - cps[k].t) / 3600, level: 0, head: -3, crossGust: 4, rain: 0 }));
   const score = (label, detail) => ({ score: 0, label, detail });
   return { v: 2, best: 0, options: [{ dep: body.now, arrive: body.now + cps.at(-1).t, level: 0, cost: 0, reasons: [], summary: "Dry all the way.",
@@ -84,8 +90,8 @@ async function openPage(hash = "", opts = {}) {
   await page.route(/brouter\.de\/brouter\?/, async (r) => {
     const first = ++calls.route === 1;
     if (first && opts.routeDelay) await new Promise((res) => setTimeout(res, opts.routeDelay));
-    const [lon, lat] = new URL(r.request().url()).searchParams.get("lonlats").split("|")[0].split(",").map(Number);
-    return json(r, brouterRoute({ lat, lon }));
+    const q = new URL(r.request().url()).searchParams, pts = q.get("lonlats").split("|").map((x) => x.split(",").map(Number));
+    return json(r, brouterRoute(pts, +q.get("alternativeidx") || 0));
   });
   await page.route(/api\.open-meteo\.com\/v1\/forecast/, (r) => json(r, forecast(r.request().url())));
   await page.route(/api\.open-meteo\.com\/v1\/elevation/, (r) => json(r, { elevation: Array(80).fill(100) }));
@@ -96,7 +102,7 @@ async function openPage(hash = "", opts = {}) {
     const body = JSON.parse(r.request().postData()), p = new URL(r.request().url()).pathname;
     calls.api.push({ path: p, body });
     if (opts.api) { const [status, reply] = opts.api(p, body); return json(r, reply, status); }
-    if (p === "/describe/route") return json(r, { v: 2, text: `A gentle ride from ${body.route.start} to ${body.route.end}.` });
+    if (p === "/describe/route") { calls.describe = (calls.describe || 0) + 1; return json(r, { v: 2, text: `A gentle ride from ${body.route.start} to ${body.route.end}.` }); }
     return json(r, p === "/assess/here" ? assessHere(body) : assessRoute(body));
   });
   await page.goto(base + "index.html" + hash);
@@ -120,9 +126,10 @@ test("A → B: pick a destination and get a route with departure times", async (
   const { page, ctx, errors, calls } = await openPage();
   await page.fill("#to", "Burford");
   await page.click("#to-sug li");
-  await page.waitForSelector(".rdlg .desc");
-  assert.match(await page.textContent(".rdlg .desc"), /Good to go/);
-  assert.match(await page.textContent(".rdlg .desc"), /9\.9 mi, about 40 min/);
+  await page.waitForSelector(".rdlg .rsum");
+  assert.match(await page.textContent(".rdlg .rsum"), /Good to go/);
+  assert.match(await page.textContent(".rdlg .rsum"), /\d+\.\d mi · 40 min · leave now, arrive \d\d:\d\d/);
+  assert.equal(await page.textContent("#plan"), "Update");
   assert.ok(await page.locator(".dep").count() >= 1);
   const route = calls.api.find((c) => c.path === "/assess/route").body;
   assert.equal(route.v, 2);
@@ -131,26 +138,91 @@ test("A → B: pick a destination and get a route with departure times", async (
   await ctx.close();
 });
 
-test("Description: asked for only on a tap, written once per departure, home kept private", async () => {
+test("the AI briefing is written straight away, once per departure, and never names home", async () => {
   const { page, ctx, errors, calls } = await openPage();
   await page.fill("#to", "Burford");
   await page.click("#to-sug li");
-  await page.waitForSelector(".rdlg .desc");
-  assert.equal(calls.api.filter((c) => c.path === "/describe/route").length, 0, "nothing is written until asked");
-  await page.click("#describe");
-  await page.waitForSelector(".ai p");
+  await page.waitForSelector(".ai:not(.writing) p");
   assert.equal(await page.textContent(".ai p"), "A gentle ride from Witney to Burford.");
   assert.match(await page.textContent(".ai small"), /Written by AI/);
-  assert.ok(await page.locator("#describe").isHidden());
   const sent = calls.api.find((c) => c.path === "/describe/route").body;
   assert.equal(sent.v, 2);
   assert.equal(sent.dep, calls.api.find((c) => c.path === "/assess/route").body.now);
   assert.doesNotMatch(JSON.stringify(sent.route), /Your location|51\.785|-1\.485/, "the route facts never name or pinpoint home");
-  // Away to another departure time (if there is one) and back: the same text, no second call.
-  const deps = await page.locator(".dep").count();
-  if (deps > 1) { await page.locator(".dep").nth(1).click(); await page.locator(".dep").nth(0).click(); }
+  // Away to another departure time and straight back: the same text, no second call.
+  if (await page.locator(".dep").count() > 1) { await page.locator(".dep").nth(1).click(); await page.locator(".dep").nth(0).click(); }
+  await page.waitForTimeout(900);
   assert.equal(await page.textContent(".ai p"), "A gentle ride from Witney to Burford.");
-  assert.equal(calls.api.filter((c) => c.path === "/describe/route").length, 1);
+  assert.equal(calls.describe, 1);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test("if the AI briefing fails, our own summary shows with a Try again", async () => {
+  let fail = true;
+  const { page, ctx, errors, calls } = await openPage("", { api: (p, body) => p === "/describe/route"
+    ? (fail ? [503, { error: "Route descriptions aren't available right now. Please try again later." }] : [200, { v: 2, text: "Second time lucky." }])
+    : [200, assessRoute(body)] });
+  await page.fill("#to", "Burford");
+  await page.click("#to-sug li");
+  await page.waitForSelector("#ai-retry");
+  assert.match(await page.textContent(".ai p"), /Dry all the way/);
+  assert.match(await page.textContent(".ai small"), /aren't available.*our own summary/);
+  fail = false;
+  await page.click("#ai-retry");
+  await page.waitForSelector(".ai:not(.writing) p:text('Second time lucky.')");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test("› finds a new route only when tapped; ‹ brings earlier ones back without asking again", async () => {
+  const { page, ctx, errors, calls } = await openPage();
+  await page.fill("#to", "Burford");
+  await page.click("#to-sug li");
+  await page.waitForSelector(".rdlg .rsum");
+  const after1 = calls.route;
+  assert.equal(after1, 1, "only the first route is fetched");
+  assert.equal(await page.textContent(".rt b"), "Route 1");
+  await page.click("#next");
+  await page.waitForFunction(() => document.querySelector(".rt b")?.textContent === "Route 2");
+  assert.equal(calls.route, 2);
+  const routeChecks = calls.api.filter((c) => c.path === "/assess/route").length;
+  await page.click("#prev");
+  await page.waitForFunction(() => document.querySelector(".rt b")?.textContent === "Route 1");
+  await page.click("#next");
+  await page.waitForFunction(() => document.querySelector(".rt b")?.textContent === "Route 2");
+  assert.equal(calls.route, 2, "going back and forward again fetches nothing new");
+  assert.equal(calls.api.filter((c) => c.path === "/assess/route").length, routeChecks);
+  // Keep going: never more than 10 routes.
+  for (let k = 3; k <= 10; k++) {
+    await page.click("#next");
+    await page.waitForFunction((n) => document.querySelector(".rt b")?.textContent.startsWith(`Route ${n}`), k);
+  }
+  assert.ok(await page.locator("#next").isDisabled(), "no 11th route");
+  assert.equal(await page.textContent(".rt b"), "Route 10 of 10");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test("risk points: a pill on the card and a hazard tag on the map; the map has a route colour key", async () => {
+  const { page, ctx, errors } = await openPage("", { api: (p, body) => {
+    if (p !== "/assess/route") return [200, { v: 2, text: "Windy in the middle." }];
+    const r = assessRoute(body), o = r.options[0];
+    o.level = 1; o.pts[2] = { ...o.pts[2], level: 1, kinds: ["wind", "rain"] };
+    return [200, r];
+  } });
+  await page.fill("#to", "Burford");
+  await page.click("#to-sug li");
+  await page.waitForSelector(".risk");
+  assert.equal(await page.locator(".risk").count(), 1);
+  assert.match(await page.textContent(".risk"), /^!\d\d:\d\d mi \d+(\.\d)? Wind$/);
+  await page.waitForSelector(".wchip.b1");
+  assert.match(await page.textContent(".wchip.b1"), /Wind/);
+  await page.click(".risk");
+  await page.waitForSelector(".maplibregl-popup");
+  assert.match(await page.textContent(".maplibregl-popup"), /Wind/);
+  assert.ok(await page.locator("#rkey").isVisible());
+  assert.match(await page.textContent("#rkey"), /Quiet road 100%/);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -172,10 +244,10 @@ test("changing a setting while a ride is planning re-plans with the new setting"
   await page.click("#to-sug li");
   await page.waitForFunction(() => document.querySelector("#plan").disabled);
   await page.click("label:has(#opt-cafe)");          // café stop off, mid-plan
-  await page.waitForSelector(".rdlg .desc");
+  await page.waitForSelector(".rdlg .rsum");
   await page.waitForFunction(() => !document.querySelector("#plan").disabled);
   assert.equal(calls.route, 2, "planned twice: once dropped, once with the new setting");
-  assert.doesNotMatch(await page.textContent(".rdlg .desc"), /café/i);
+  assert.match(decodeURIComponent(page.url()), /"o":"1000"/, "the ride on show has the café stop off");
   assert.deepEqual(errors, []);
   await ctx.close();
 });

@@ -2,7 +2,7 @@
 // MapLibre comes from its own <script> tag (the global maplibregl).
 
 import { WMO, compass } from "./logic.js";
-import { UK_CENTRE, SURFACE, destPoint, miles, clock } from "./route.js";
+import { UK_CENTRE, SURFACES, SURFACE, destPoint, miles, clock } from "./route.js";
 import { $, store, esc, num, VERDICT, svg, wxBits } from "./app.js";
 
 const maplibregl = globalThis.maplibregl;
@@ -23,6 +23,7 @@ map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribut
 if (isWide()) map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
 const ROUTE_LAYERS = ["route-solid", ...Object.keys(DASH).map((k) => `route-${k}`)];
 const mapReady = new Promise((resolve) => map.on("load", () => {
+  readableLabels();
   const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;   // route goes under every label
   map.addSource("route", { type: "geojson", data: EMPTY });
   map.addSource("alts", { type: "geojson", data: EMPTY });
@@ -46,6 +47,43 @@ const mapReady = new Promise((resolve) => map.on("load", () => {
   resolve();
 }));
 map.on("zoomend", layoutChips);
+
+// Road and place names never shrink below a readable size (the map's own styles go down to 10 px).
+const MIN_TEXT = [[/^highway[-_]name/, 14], [/^(label|place)_(other|village|town|suburb)/, 14], [/^(label|place)_city/, 15]];
+function readableLabels() {
+  for (const l of map.getStyle().layers) {
+    const min = MIN_TEXT.find(([re]) => re.test(l.id))?.[1], size = l.layout?.["text-size"];
+    if (min && size !== undefined) map.setLayoutProperty(l.id, "text-size", atLeast(size, min));
+  }
+}
+// A text-size value (number, zoom curve or old-style stops) with every size raised to at least `min`.
+function atLeast(v, min) {
+  if (typeof v === "number") return Math.max(v, min);
+  if (Array.isArray(v) && (v[0] === "interpolate" || v[0] === "step")) {
+    const first = v[0] === "interpolate" ? 4 : 2;    // where the sizes start: [interpolate, type, input, zoom, size, …] / [step, input, size, zoom, size, …]
+    return v.map((x, i) => (i >= first && (i - first) % 2 === 0 ? atLeast(x, min) : x));
+  }
+  if (Array.isArray(v?.stops)) return { ...v, stops: v.stops.map(([z, x]) => [z, atLeast(x, min)]) };
+  return ["max", min, v];
+}
+
+// --- Route colour key: a small card on the map, only the kinds of path this route uses ---------
+
+const KEY_NAME = { quiet: "Quiet road", path: "Cycle path", busy: "Busy road", g1: "Smooth track", g2: "Rough track", g3: "MTB only", unknown: "Unknown surface" };
+const keyEl = $("rkey");
+function showKey(stats) {
+  const shown = stats ? SURFACES.filter((x) => stats.pct[x.id] >= 1) : [];
+  keyEl.hidden = !shown.length;
+  keyEl.innerHTML = shown.map((x) => `<span><i style="background:${x.dash ? `repeating-linear-gradient(90deg, ${x.colour} 0 5px, transparent 5px 8px)` : x.colour}"></i>${KEY_NAME[x.id]} <small>${Math.round(stats.pct[x.id])}%</small></span>`).join("");
+  placeKey();
+}
+// Just under the search card on phones; top right of the map (beside the zoom buttons) on computers.
+function placeKey() {
+  if (keyEl.hidden) return;
+  keyEl.style.top = `${isWide() ? 10 : Math.round($("top").getBoundingClientRect().bottom + 8)}px`;
+  keyEl.style.right = isWide() ? "52px" : "10px";
+}
+addEventListener("resize", placeKey);
 
 // A chevron pointing along the line (east = forwards), drawn at 2× for sharp screens.
 function chevron() {
@@ -77,7 +115,7 @@ function fitTo(points, maxZoom = 15) {
 
 // --- Markers -------------------------------------------------------------------------
 
-let chips = [], markers = [];
+let chips = [], markers = [], pointTips = [];
 
 // An HTML marker that shows its details on tap, and on hover with a mouse.
 function addMarker(el, lat, lon, html, anchor = "center", offset = 16) {
@@ -93,17 +131,18 @@ function addMarker(el, lat, lon, html, anchor = "center", offset = 16) {
 function div(cls, html = "") { const d = document.createElement("div"); d.className = cls; d.innerHTML = html; return d; }
 function clearMap() {
   markers.forEach((m) => m.remove()); markers = [];
-  chips.forEach((c) => c.marker.remove()); chips = [];
+  chips.forEach((c) => c.marker.remove()); chips = []; pointTips = [];
   hoverPop?.remove();
+  keyEl.hidden = true;
   // Clear now if the map is ready (drawTrip always is), so a new route drawn straight after isn't wiped.
   const wipe = () => ["route", "route-dir", "alts"].forEach((id) => map.getSource(id)?.setData(EMPTY));
   if (map.getSource("route")) wipe(); else mapReady.then(wipe);
 }
 
 // --- Drawing a ride: coloured by path type, labels stay on top ---------------------
-// `o` is the chosen departure option; `cafeHtml(c)` gives a café's popup.
+// `o` is the chosen departure option; `cafeHtml(c)` gives a café's popup; `hazard(p)` names a point's worst hazard.
 
-function drawTrip(trip, o, fit, cafeHtml) {
+function drawTrip(trip, o, fit, cafeHtml, hazard) {
   clearMap();
   const { coords } = trip.route;
   const line = (pts) => ({ type: "LineString", coordinates: pts.map(([la, lo]) => [lo, la]) });
@@ -130,16 +169,28 @@ function drawTrip(trip, o, fit, cafeHtml) {
   if (trip.ride === "ab") addMarker(div("pin-end"), coords.at(-1)[0], coords.at(-1)[1], `<b>Finish</b><br>${esc(trip.to.name)}`);
   trip.cafes.forEach((c) => addMarker(div(`pin-cafe${c.chain ? " chain" : ""}${trip.option.cafe?.name === c.name ? " stop" : ""}`, "☕"), c.lat, c.lon, () => cafeHtml(c), "center", 18));
 
-  // Weather tags (thinned so they never overlap).
+  // Weather tags: when you'd be there, and the weather; risk points say their hazard instead of the temperature.
   chips = o.pts.map((p, k) => {
     const b = wxBits(p.h, p.at), h = p.h, i = p.at;
-    const el = div(`wchip b${p.level}`, `${p.level ? `<b class="tg">${["", "!", "×"][p.level]}</b>` : ""}${svg(b.icon)}<span>${b.temp}°</span>${b.arrow}`);
-    const tip = `<b>${k === 0 ? "Start" : k === o.pts.length - 1 ? "End" : "Mile " + miles(p.dist)} · ${clock(p.eta)} · ${VERDICT[p.level].title}</b><br>${WMO[h.weather_code[i]] ?? ""}, ${b.temp}° · ${b.fall}<br>Wind from the ${compass(h.wind_direction_10m[i])}, ${num(h.wind_speed_10m[i])} mph, gusts ${num(h.wind_gusts_10m[i])}`;
+    const body = p.level ? `<b class="tg">${["", "!", "×"][p.level]}</b><span class="eta">${clock(p.eta)}</span>${svg(b.icon)}<span>${esc(hazard(p))}</span>`
+      : `<span class="eta">${clock(p.eta)}</span>${svg(b.icon)}<span>${b.temp}°</span>${b.arrow}`;
+    const el = div(`wchip b${p.level}`, body);
+    const tip = `<b>${k === 0 ? "Start" : k === o.pts.length - 1 ? "End" : "Mile " + miles(p.dist)} · ${clock(p.eta)} · ${p.level ? esc(hazard(p)) : VERDICT[p.level].title}</b><br>${WMO[h.weather_code[i]] ?? ""}, ${b.temp}° · ${b.fall}<br>Wind from the ${compass(h.wind_direction_10m[i])}, ${num(h.wind_speed_10m[i])} mph, gusts ${num(h.wind_gusts_10m[i])}`;
     const marker = new maplibregl.Marker({ element: el, anchor: "bottom", offset: [0, -8] }).setLngLat([p.lon, p.lat]);
     el.addEventListener("click", (e) => { e.stopPropagation(); showPopup(tip, [p.lon, p.lat], 34); });
+    pointTips[k] = { tip, lngLat: [p.lon, p.lat] };
     return { marker, lngLat: [p.lon, p.lat], level: p.level, end: k === 0 || k === o.pts.length - 1 ? 1 : 0 };
   });
+  showKey(trip.stats);
   if (fit) { fitTo(coords); map.once("moveend", layoutChips); } else layoutChips();
+}
+
+// Show weather point k of the ride on the map (from the risk pills on the route card).
+function showPoint(k) {
+  const t = pointTips[k];
+  if (!t) return;
+  map.easeTo({ center: t.lngLat, zoom: Math.max(map.getZoom(), 12), duration: 500 });
+  showPopup(t.tip, t.lngLat, 34);
 }
 
 // Weather tags, thinned so they never overlap. Hazards and the ends win space first.
@@ -148,7 +199,7 @@ function layoutChips() {
   const order = chips.map((c, k) => ({ c, k })).sort((a, b) => b.c.level - a.c.level || b.c.end - a.c.end || a.k - b.k);
   for (const { c } of order) {
     const pt = map.project(c.lngLat);
-    const clash = placed.some((q) => Math.abs(q.x - pt.x) < 104 && Math.abs(q.y - pt.y) < 34);
+    const clash = placed.some((q) => Math.abs(q.x - pt.x) < 140 && Math.abs(q.y - pt.y) < 34);
     if (clash) c.marker.remove(); else { placed.push(pt); c.marker.addTo(map); }
   }
 }
@@ -226,4 +277,4 @@ function askCompass() {
 // Already allowed on an earlier visit? Show the dot straight away.
 navigator.permissions?.query({ name: "geolocation" }).then((s) => { if (s.state === "granted") followMe(); }).catch(() => {});
 
-export { map, mapReady, ROUTE_LAYERS, isWide, popup, showPopup, fitTo, addMarker, div, clearMap, drawTrip, me, showMe, followMe, askCompass };
+export { map, mapReady, ROUTE_LAYERS, isWide, popup, showPopup, fitTo, addMarker, div, clearMap, drawTrip, showPoint, placeKey, me, showMe, followMe, askCompass };

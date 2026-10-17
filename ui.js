@@ -3,18 +3,21 @@
 
 import { PAST_HOURS, fetchWeather, fetchPlace } from "./logic.js";
 import { SURFACE, SURFACE_FIT, routeCalls, searchPlaces, fetchRoute, makeCheckpoints, fetchElevation, fetchRouteWeather, forecastHoursFor,
-  cycleProfile, fetchCycleRoute, surfaceStats } from "./route.js";
-import { cafesOnRoute, planLoop, addCafeStop } from "./loop.js";
+  cycleProfile, fetchCycleRoute, surfaceStats, haversine, destPoint, bearing } from "./route.js";
+import { cafesOnRoute, planLoop, loopAt, similarity, addCafeStop } from "./loop.js";
 import { assessHere, assessRoute, describeRoute } from "./api.js";
 import { routeNames, publicName, rideFacts } from "./describe.js";
 import { BIKES, shareHash, parseShare } from "./share.js";
 import { $, store, setStatus, esc, getPosition, countUp, hereHtml, renderHow } from "./app.js";
-import { map, mapReady, ROUTE_LAYERS, isWide, popup, fitTo, clearMap, drawTrip, me, showMe, followMe, askCompass } from "./map.js";
-import { BIKE_NAME, rideTitle, tripHtml, aiHtml, cafePopup } from "./render.js";
+import { map, mapReady, ROUTE_LAYERS, isWide, popup, fitTo, clearMap, drawTrip, showPoint, placeKey, me, showMe, followMe, askCompass } from "./map.js";
+import { BIKE_NAME, rideTitle, tripHtml, aiBox, pointHazard, cafePopup } from "./render.js";
 
 const panel = $("panel"), body = $("panel-body"), planBtn = $("plan"), fromIn = $("from"), toIn = $("to");
 let fromSel = null, toSel = null;     // fromSel null = "my location"
 let trip = null, chosen = 0;
+// Every route found for this ride, planned and checked: ‹ goes back through them, › shows the next or finds a new one.
+let routes = [];
+const MAX_ROUTES = 10;
 
 // Tap the map: what's this stretch of route, switch to another route, or ride / start from here.
 map.on("click", (e) => {
@@ -40,14 +43,17 @@ map.on("click", (e) => {
 
 // --- Settings (remembered between visits) -----------------------------------------------
 
-const prefs = { ride: "ab", bike: "road", busy: true, offroad: false, cafe: true, flat: false, miles: 25, ...store.get("prefs", {}) };
+const prefs = { ride: "ab", bike: "road", offroad: false, cafe: true, miles: 25, ...store.get("prefs", {}) };
 if (!BIKES.includes(prefs.bike)) prefs.bike = "road";
+// Busy roads are always avoided and there's no "prefer flat" any more (both still written in share links, for older pages).
+const fixedPrefs = () => Object.assign(prefs, { busy: true, flat: false });
+fixedPrefs();
 const savePrefs = () => store.set("prefs", prefs);
 const lim = () => (prefs.bike === "motorbike" ? "motorbike" : "bicycle");
 
 function showPrefs() {
   $("bike").value = prefs.bike;
-  $("opt-busy").checked = prefs.busy; $("opt-offroad").checked = prefs.offroad; $("opt-cafe").checked = prefs.cafe; $("opt-flat").checked = prefs.flat;
+  $("opt-offroad").checked = prefs.offroad; $("opt-cafe").checked = prefs.cafe;
   $("loop-len").value = prefs.miles;
 }
 showPrefs();
@@ -76,7 +82,7 @@ $("bike").addEventListener("change", (e) => {
   savePrefs(); syncControls(); if (trip || busy) plan();
 });
 // A change re-plans the ride on show, or the one being planned right now.
-[["opt-busy", "busy"], ["opt-offroad", "offroad"], ["opt-cafe", "cafe"], ["opt-flat", "flat"]].forEach(([id, k]) =>
+[["opt-offroad", "offroad"], ["opt-cafe", "cafe"]].forEach(([id, k]) =>
   $(id).addEventListener("change", (e) => { prefs[k] = e.target.checked; savePrefs(); if (trip || busy) plan(); }));
 $("loop-len").addEventListener("input", (e) => { prefs.miles = +e.target.value; $("loop-out").textContent = `${prefs.miles} mi`; });
 $("loop-len").addEventListener("change", savePrefs);
@@ -88,6 +94,7 @@ function setSheet(state) { panel.dataset.state = state; document.body.dataset.sh
 function setCollapsed(on, text) {
   if (text) $("search-mini-text").textContent = text;
   $("top").classList.toggle("collapsed", on && !isWide());
+  placeKey();
 }
 $("search-mini").addEventListener("click", () => { setCollapsed(false); setSheet("peek"); });
 $("grab").addEventListener("click", () => setSheet({ peek: "half", half: "full", full: "peek" }[panel.dataset.state]));
@@ -214,10 +221,11 @@ function endJob() {
   next?.();
 }
 
+// The Plan / Update button spins while busy; what's happening is shown in the status line.
 function setBusy(on, text) {
   planBtn.disabled = on;
   planBtn.classList.toggle("loading", on);
-  planBtn.querySelector(".btn-text").textContent = on ? text : trip ? "Update ride" : "Plan my ride";
+  planBtn.querySelector(".btn-text").textContent = trip ? "Update" : "Plan";
   if (on) setStatus(text);
 }
 const routeError = (e) => new Error(e.message === "noroute" ? "Couldn't find a route there. Try somewhere nearer, or a different spelling."
@@ -233,31 +241,30 @@ async function plan() {
   if (id === null) return setStatus("Updating with your latest choices…");
   if (!fromSel) askCompass();
   setBusy(true, "Finding the way…");
-  const bike = prefs.bike, opts = { avoidBusy: prefs.busy, offroad: prefs.offroad, cafe: prefs.cafe, flat: prefs.flat };
+  const bike = prefs.bike, opts = { avoidBusy: true, offroad: prefs.offroad, cafe: prefs.cafe, flat: false };
   try {
     const from = fromSel || (fromIn.value.trim() ? (fromSel = await resolvePlace(fromIn, null, fromAc)) : await getPosition());
     if (!fromSel) { me.pos = [from.lat, from.lon]; followMe(); }
     store.set("lastCentre", [+from.lat.toFixed(3), +from.lon.toFixed(3)]);
-    let option, others = [], to = null;
+    let option, others = [], to = null, wind = null;
     if (prefs.ride === "ab") {
       to = toSel = await resolvePlace(toIn, toSel, toAc);
-      const route = bike === "motorbike" ? await fetchRoute(from, to, "motorbike").catch((e) => { throw routeError(e); })
+      const route = bike === "motorbike" ? await fetchRoute([from, to], "motorbike").catch((e) => { throw routeError(e); })
         : await fetchCycleRoute([from, to], cycleProfile(bike, opts.offroad, opts.avoidBusy)).catch((e) => { throw routeError(e); });
       option = { route, waypoints: [from, to] };
     } else {
       setBusy(true, "Checking the wind…");
       const h = (await fetchWeather(from.lat, from.lon)).hourly, i = PAST_HOURS;
-      const wind = { from: h.wind_direction_10m[i] ?? 270, speed: h.wind_speed_10m[i] ?? 0 };   // gap in the forecast: plan as if a light westerly
+      wind = { from: h.wind_direction_10m[i] ?? 270, speed: h.wind_speed_10m[i] ?? 0 };   // gap in the forecast: plan as if a light westerly
       const loop = await planLoop(from, prefs.miles, bike, opts, wind, (t) => setBusy(true, t)).catch((e) => { throw routeError(e); });
       option = loop.best; others = loop.others;
     }
     if (stale(id)) return;
-    // A → B bike routes fetch alternatives on demand (BRouter gives up to 3 more).
-    const ctx = { ride: prefs.ride, bike, opts, from, to, target: prefs.miles, choices: [option, ...others],
-      moreAlts: prefs.ride === "ab" && bike !== "motorbike" };
+    // Only this route is checked now; others are found when the rider taps › (see nextChoice). `gen` is shared by all of them.
+    const ctx = { ride: prefs.ride, bike, opts, from, to, target: prefs.miles, wind, choices: [option], gen: { pool: others, step: 0, done: false } };
     const planned = await analyse(option, ctx, 0);
     if (stale(id)) return;
-    trip = planned; chosen = 0;
+    routes = [planned]; trip = planned; chosen = 0;
     remember(fromSel); remember(to);
     history.replaceState(null, "", shareHash(trip.ride, trip.bike, prefs, trip.to, fromSel));
     setStatus("");
@@ -290,7 +297,7 @@ async function analyse(option, ctx, k) {
   if (!p.options.length) throw new Error("That ride is longer than the forecast covers. Try a shorter route.");
   const cafes = option.cafeList?.length ? cafesOnRoute(route, option.cafeList, now) : [];
   if (option.cafe && !cafes.some((c) => c.name === option.cafe.name)) cafes.push(...cafesOnRoute(route, [option.cafe], now, 400));
-  return { ...ctx, ...p, now, descs: {}, names: null, option, route, cps, elev, alt: k, cafes: cafes.sort((a, b) => a.dist - b.dist),
+  return { ...ctx, ...p, now, descs: {}, descErr: {}, descBusy: {}, names: null, lastChosen: 0, option, route, cps, elev, alt: k, cafes: cafes.sort((a, b) => a.dist - b.dist),
     stats: route.cls ? surfaceStats(route, ctx.bike) : null };
 }
 
@@ -300,31 +307,59 @@ function elevFromRoute(route) {
   return z.length > 1 ? { d, z } : null;
 }
 
-// Switch to route k (loops: already planned; A → B: fetched from BRouter the first time). Ignored while something else runs.
+// Show route k: one found already comes straight back (with the departure you last had on it); the next new one is
+// found and checked first. Ignored while something else runs.
 async function chooseAlt(k) {
-  if (busy || !trip || k === trip.alt || k < 0) return;
+  if (busy || !trip || k === trip.alt || k < 0 || k >= MAX_ROUTES) return;
+  if (routes[k]) { trip = routes[k]; chosen = trip.lastChosen; return renderTrip(false, true); }
+  if (k !== routes.length || trip.gen.done) return;
   const id = startJob(null);
   try {
-    const ctx = { ...trip };
-    if (!ctx.choices[k]) {
-      if (!ctx.moreAlts) return;
-      setStatus("Finding another route…");
-      const profile = cycleProfile(ctx.bike, ctx.opts.offroad, ctx.opts.avoidBusy);
-      const route = await fetchCycleRoute([ctx.from, ctx.to], profile, k).catch((e) => { throw routeError(e); });
-      if (stale(id)) return;
-      const same = ctx.choices.some((c) => Math.abs(c.route.distance - route.distance) < 50 && Math.abs(c.route.duration - route.duration) < 30);
-      if (same || k >= 3) trip.moreAlts = false;
-      if (same) { setStatus("That's the only sensible route we found."); renderTrip(false, false); return; }
-      ctx.choices[k] = { route, waypoints: [ctx.from, ctx.to] };
-      ctx.moreAlts = trip.moreAlts;
-    }
-    const planned = await analyse(ctx.choices[k], ctx, k);
+    setBusy(true, "Finding another route…");
+    const option = await nextChoice(trip).catch((e) => { throw routeError(e); });
     if (stale(id)) return;
-    trip = planned; chosen = 0;
+    if (!option) { trip.gen.done = true; setStatus("That's all the different routes we could find."); return renderTrip(false, false); }
+    trip.choices[k] = option;
+    const planned = await analyse(option, { ...trip }, k);
+    if (stale(id)) return;
+    routes[k] = planned; trip = planned; chosen = 0;
     setStatus("");
     renderTrip(false, true);
-  } catch (e) { if (!stale(id)) setStatus(e.message || "Couldn't load that route.", true); }
+  } catch (e) { if (!stale(id)) setStatus(e.message || "Couldn't find another route.", true); }
   finally { endJob(); }
+}
+
+// A new route, clearly different from those found so far, or null when there are no more.
+// Loops: the spare loops from the first search, then new directions. A → B: BRouter's own alternatives (bicycles),
+// then detours through a point to one side or the other of the straight line, further out each time.
+const LOOP_TURNS = [35, -35, 105, -105, 145, -145, 70, -70, 180, 0];
+const SIDES = [0.15, -0.15, 0.3, -0.3, 0.45, -0.45, 0.6, -0.6];
+async function nextChoice(t) {
+  const g = t.gen, profile = cycleProfile(t.bike, t.opts.offroad, true);
+  const fresh = (route) => t.choices.every((c) => !c || similarity(route, c.route) < 0.85);
+  if (t.ride === "loop") {
+    while (g.pool.length) { const c = g.pool.shift(); if (fresh(c.route)) return c; }
+    while (g.step < LOOP_TURNS.length) {
+      const brg = (t.wind.from + LOOP_TURNS[g.step++] + 360) % 360;
+      try { const c = await loopAt(t.from, t.target, t.bike, t.opts, t.wind, brg); if (fresh(c.route)) return c; }
+      catch (e) { if (e.message === "busy") throw e; /* no loop that way: try the next direction */ }
+    }
+    return null;
+  }
+  const steps = [...(t.bike === "motorbike" ? [] : [1, 2, 3].map((alt) => ({ alt }))), ...SIDES.map((side) => ({ side }))];
+  while (g.step < steps.length) {
+    const st = steps[g.step++], wps = st.alt ? [t.from, t.to] : [t.from, detour(t.from, t.to, st.side), t.to];
+    try {
+      const route = t.bike === "motorbike" ? await fetchRoute(wps, "motorbike") : await fetchCycleRoute(wps, profile, st.alt || 0);
+      if (route.distance <= 2 * t.choices[0].route.distance && fresh(route)) return { route, waypoints: wps };
+    } catch (e) { if (e.message === "busy") throw e; /* no way through there: try the next */ }
+  }
+  return null;
+}
+// A point `side` × the distance from A to B, out to the left (negative) or right of the halfway point.
+function detour(a, b, side) {
+  const d = haversine([a.lat, a.lon], [b.lat, b.lon]);
+  return destPoint((a.lat + b.lat) / 2, (a.lon + b.lon) / 2, (bearing(a, b) + (side > 0 ? 90 : 270)) % 360, Math.abs(side) * d);
 }
 
 planBtn.addEventListener("click", plan);
@@ -351,6 +386,7 @@ function saveAs(which) {
   if (st.from) { fromSel = st.from; fromIn.value = fromSel.label; }
   if (st.bike) prefs.bike = st.bike;
   if (st.opts) Object.assign(prefs, st.opts);
+  fixedPrefs();
   if (st.miles) prefs.miles = st.miles;
   showPrefs();
   setRide(st.ride); syncControls();
@@ -360,39 +396,61 @@ function saveAs(which) {
 // --- Showing a ride ------------------------------------------------------------------------
 
 function renderTrip(first, fit) {
-  body.innerHTML = tripHtml(trip, chosen, first);
+  body.innerHTML = tripHtml(trip, chosen, first, { n: routes.length, more: !trip.gen.done && routes.length < MAX_ROUTES });
   $("intro").hidden = true;
   $("prev").addEventListener("click", () => chooseAlt(trip.alt - 1));
   $("next").addEventListener("click", () => chooseAlt(trip.alt + 1));
-  body.querySelectorAll(".dep").forEach((b) => b.addEventListener("click", () => { chosen = +b.dataset.i; renderTrip(false, false); }));
+  body.querySelectorAll(".dep").forEach((b) => b.addEventListener("click", () => { chosen = trip.lastChosen = +b.dataset.i; renderTrip(false, false); }));
+  body.querySelectorAll(".risk").forEach((b) => b.addEventListener("click", () => showPoint(+b.dataset.pt)));
   $("share").addEventListener("click", shareRide);
-  $("describe").addEventListener("click", describeTrip);
+  wireRetry(trip, chosen);
   body.querySelectorAll("[data-save]").forEach((b) => b.addEventListener("click", () => saveAs(b.dataset.save)));
   countUp(body);
   if (first) { setCollapsed(true, rideTitle(trip)); setSheet("half"); }
   const o = trip.options[chosen];
-  mapReady.then(() => drawTrip(trip, o, fit, (c) => cafePopup(trip, chosen, c)));
+  mapReady.then(() => drawTrip(trip, o, fit, (c) => cafePopup(trip, chosen, c), pointHazard));
+  autoDescribe(first ? 0 : 700);
 }
 
-// --- Description: an AI-written paragraph on what to expect, only when asked for -----------
-// Kept per departure on the trip, so switching back and forth doesn't ask again. Runs alongside other jobs:
-// if the ride or departure on show changes meanwhile, the text is kept for later but not shown.
+// --- The AI briefing: a paragraph on what to expect, written for whichever route and departure is on show ---------
+// Asked for as soon as a ride is shown, and after a short pause when you switch route or departure (so flicking
+// through doesn't ask for each one). Kept per departure on the route, so going back never asks again.
+// If it can't be written, our own few sentences are shown instead, with a "Try again".
 
-async function describeTrip() {
-  const t = trip, k = chosen, o = t?.options[k], btn = $("describe");
-  if (!o || btn.disabled) return;
-  btn.disabled = true; btn.textContent = "Writing…";
+let describeTimer = null;
+function autoDescribe(delay) {
+  clearTimeout(describeTimer);
+  const t = trip, k = chosen;
+  if (!t || t.descs[k] || t.descErr[k]) return;
+  describeTimer = setTimeout(() => describeTrip(t, k), delay);
+}
+
+async function describeTrip(t, k) {
+  if (trip !== t || chosen !== k || t.descs[k] || t.descBusy[k]) return;
+  const o = t.options[k];
+  t.descBusy[k] = true;
+  delete t.descErr[k];
+  showAi(t, k);
   try {
     const names = t.names || (t.names = await routeNames(t.route));
     const [start, end] = await Promise.all([publicName(t.from), publicName(t.to)]);
     const wx = t.cps.map((_, i) => o.pts[i].h);
     t.descs[k] = await describeRoute(t.cps, wx, t.bike === "motorbike" ? "motorbike" : "bicycle", t.now, o.dep, rideFacts(t, o, names, start, end));
-    if (trip === t && chosen === k) { $("ai").innerHTML = aiHtml(t.descs[k]); $("describe").hidden = true; }
   } catch (e) {
-    if (trip === t) setStatus(e.message || "Couldn't write a description right now. Please try again.", true);
+    t.descErr[k] = `${e.message || "The AI briefing isn't available right now."} Here's our own summary instead.`;
   } finally {
-    if (trip === t && chosen === k && !t.descs[k]) { btn.disabled = false; btn.textContent = "Description"; }
+    t.descBusy[k] = false;
+    showAi(t, k);
   }
+}
+
+function showAi(t, k) {
+  if (trip !== t || chosen !== k || !$("ai")) return;
+  $("ai").outerHTML = aiBox(t, k);
+  wireRetry(t, k);
+}
+function wireRetry(t, k) {
+  $("ai-retry")?.addEventListener("click", () => { delete t.descErr[k]; describeTrip(t, k); });
 }
 
 // --- "Safe to ride here?" --------------------------------------------------------------
@@ -413,7 +471,7 @@ async function checkHere() {
     const [data, place] = await Promise.all([fetchWeather(pos.lat, pos.lon), fetchPlace(pos.lat, pos.lon)]);
     const a = await assessHere(data.hourly, lim());
     if (stale(id)) return;
-    trip = null;
+    trip = null; routes = [];
     clearMap();
     me.note = place ? `<b>You're near ${esc(place)}</b>` : "";
     $("intro").hidden = true;

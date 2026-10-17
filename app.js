@@ -218,7 +218,7 @@ function renderHow() {
       <li><b>Soak</b> (how wet you'll get): the rain you'd ride through, weighted by how likely it is.</li>
       <li><b>Wind</b>: your strongest gust against your vehicle's limit.</li></ul>
     <h3>Loops and café stops</h3>
-    <p>We try loops in up to six directions, heading out into the wind so it's behind you on the way home, and pick the one that best matches your distance with the fewest busy roads, unsuitable surfaces and retraced roads (and the least climbing if you prefer flat). Cafés come from OpenStreetMap; we pick one near halfway, open when you'd arrive if its hours are known.</p>
+    <p>We try loops in up to six directions, heading out into the wind so it's behind you on the way home, and pick the one that best matches your distance with the fewest busy roads, unsuitable surfaces and retraced roads. Cafés come from OpenStreetMap; we pick one near halfway, open when you'd arrive if its hours are known.</p>
     <p>When part of the forecast is missing we say so, and never call it "Good to go".</p>
     <p>Safe2Ride is guidance only: it can't see the road in front of you.</p>`;
 }

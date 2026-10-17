@@ -308,7 +308,36 @@ async function planLoop(start, miles, bike, opts, wind, progress = () => {}) {
   await rescaleLoop(tried[0], target, bike, opts, wind, profile);
   if (findSpurs(tried[0].route).length) await removeSpurs(tried[0], target, bike, opts, wind, profile);
   tried.sort((a, b) => a.score.total - b.score.total);
-  return { best: tried[0], others: tried.slice(1, 3) };
+  // The rest aren't shown yet: they're the first ones offered when the rider asks for another route.
+  return { best: tried[0], others: tried.slice(1) };
+}
+
+// One more loop, heading out on compass bearing `brg`: routed, its length corrected and out-and-back stretches removed.
+async function loopAt(start, miles, bike, opts, wind, brg) {
+  const target = miles * MILE, profile = cycleProfile(bike, opts.offroad, opts.avoidBusy);
+  let wps = loopWaypoints(start, target, brg), route = await fetchCycleRoute(wps, profile);
+  if (Math.abs(route.distance - target) / target > 0.1) {
+    wps = loopWaypoints(start, target * target / route.distance, brg);
+    route = await fetchCycleRoute(wps, profile);
+  }
+  const cand = { route, waypoints: wps, heading: brg, score: scoreLoop(route, target, bike, opts, wind) };
+  await rescaleLoop(cand, target, bike, opts, wind, profile);
+  if (findSpurs(cand.route).length) await removeSpurs(cand, target, bike, opts, wind, profile);
+  return cand;
+}
+
+// How much of route a runs along route b (0–1): the share of points every 50 m that are within ~40 m of b.
+function similarity(a, b) {
+  const cell = (p) => [Math.round(p.lat / 0.0004), Math.round(p.lon / 0.0006)];
+  const cells = new Set();
+  for (let d = 0; d <= b.distance; d += 25) { const [y, x] = cell(pointAt(b, d)); cells.add(`${y},${x}`); }
+  let n = 0, on = 0;
+  for (let d = 0; d <= a.distance; d += 50) {
+    const [y, x] = cell(pointAt(a, d));
+    n++;
+    if ([-1, 0, 1].some((dy) => [-1, 0, 1].some((dx) => cells.has(`${y + dy},${x + dx}`)))) on++;
+  }
+  return n ? on / n : 1;
 }
 
 // Move the waypoint nearest the worst unsuitable stretch (towards the loop's middle, or round the circle)
@@ -353,4 +382,4 @@ async function addCafeStop(option, bike, opts, dep) {
   return { ...base, route, waypoints: wps, cafe: { ...pick.cafe, open: pick.open, frac: pick.frac } };
 }
 
-export { openAt, searchCafes, isChain, cafesOnRoute, routeBounds, insertStop, loopWaypoints, findSpurs, overlapPct, scoreLoop, planLoop, addCafeStop };
+export { loopAt, similarity, openAt, searchCafes, isChain, cafesOnRoute, routeBounds, insertStop, loopWaypoints, findSpurs, overlapPct, scoreLoop, planLoop, addCafeStop };

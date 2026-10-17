@@ -23,17 +23,21 @@ async function searchPlaces(q, near, signal) {
   }).filter((r) => !seen.has(r.label) && seen.add(r.label));
 }
 
-async function fetchRoute(from, to, mode) {
+// Motorbike route through waypoints [{lat, lon}, …] (start, any via points, finish).
+async function fetchRoute(waypoints, mode) {
   const url = `https://routing.openstreetmap.de/${ROUTE_PROFILE[mode]}/route/v1/driving/`
-    + `${from.lon},${from.lat};${to.lon},${to.lat}?overview=full&geometries=geojson&annotations=duration,distance&alternatives=false&steps=false`;
+    + `${waypoints.map((w) => `${w.lon},${w.lat}`).join(";")}?overview=full&geometries=geojson&annotations=duration,distance&alternatives=false&steps=false`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("route " + res.status);
   const j = await res.json();
   if (j.code !== "Ok" || !j.routes?.length) throw new Error("noroute");
-  const r = j.routes[0], a = r.legs[0].annotation;
+  const r = j.routes[0];
   const cumD = [0], cumT = [0];
-  a.distance.forEach((d, i) => { cumD.push(cumD[i] + d); cumT.push(cumT[i] + a.duration[i]); });
-  return { coords: r.geometry.coordinates.map(([lo, la]) => [la, lo]), cumD, cumT, distance: r.distance, duration: r.duration };
+  // Each leg's points start where the last one ended: its distances and times simply follow on.
+  r.legs.forEach((leg) => leg.annotation.distance.forEach((d, i) => { cumD.push(cumD.at(-1) + d); cumT.push(cumT.at(-1) + leg.annotation.duration[i]); }));
+  const n = Math.min(cumD.length, r.geometry.coordinates.length);    // the same, unless a leg's annotation is short
+  cumD.length = cumT.length = n;
+  return { coords: r.geometry.coordinates.slice(0, n).map(([lo, la]) => [la, lo]), cumD, cumT, distance: r.distance, duration: r.duration };
 }
 
 // Evenly spaced points along the route (every ~2.5 miles, 4–21 points), each with

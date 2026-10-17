@@ -2,7 +2,7 @@
 // `chosen` the departure option being shown. Building HTML only: ui.js wires up the buttons.
 
 import { PAST_HOURS, compass } from "./logic.js";
-import { MILE, SURFACES, climbStats, miles, clock, duration } from "./route.js";
+import { MILE, climbStats, miles, clock, duration } from "./route.js";
 import { openAt } from "./loop.js";
 import { VERDICT, esc, num, svg, lvPill, wxBits, scoreTiles, reasonList } from "./app.js";
 
@@ -17,27 +17,29 @@ function rideTitle(trip) {
 }
 
 // The whole results card. `first` = a newly planned ride (cards animate in).
-function tripHtml(trip, chosen, first) {
+// `nav`: { n: routes found so far, more: whether › can look for another }.
+function tripHtml(trip, chosen, first, nav) {
   const o = trip.options[chosen], best = trip.options[trip.best], cycle = trip.bike !== "motorbike";
   const backWord = trip.ride === "loop" ? "back" : "arrive";
-  const n = trip.choices.filter(Boolean).length, known = !trip.moreAlts;
   const hazard = (d) => (d.level ? HAZARD_WORD[d.reasons.find((r) => r.level === d.level)?.kind] || VERDICT[d.level].title : "Clear");
   const anim = (i) => (first ? `reveal" style="--i:${i}` : "swap");
-  const sub = trip.alt === 0 ? (n > 1 || trip.moreAlts ? "Best match" : "") : trip.ride === "loop" ? `Heads ${compass(trip.option.heading ?? 0)} first` : "Alternative route";
+  const several = nav.n > 1 || nav.more;
+  const sub = trip.alt === 0 ? (several ? "Best match" : "") : trip.ride === "loop" ? `Heads ${compass(trip.option.heading ?? 0)} first` : "Alternative route";
   const note = cycle && trip.opts.cafe ? cafeNote(trip) : "";
+  const climb = trip.route.climb || (trip.elev ? climbStats(trip.elev.z).up : 0);
 
   return `
     <div class="card rdlg ${anim(0)}">
       <div class="rhead">
         <button type="button" class="arr" id="prev" aria-label="Previous route" ${trip.alt === 0 ? "disabled" : ""}>‹</button>
-        <div class="rt"><b>${n > 1 || trip.moreAlts ? `Route ${trip.alt + 1}${known ? ` of ${n}` : ""}` : "Your route"}</b><small>${esc(sub)}</small></div>
-        <button type="button" class="arr" id="next" aria-label="Next route" ${trip.alt + 1 < n || trip.moreAlts ? "" : "disabled"}>›</button>
+        <div class="rt"><b>${several ? `Route ${trip.alt + 1}${nav.more ? "" : ` of ${nav.n}`}` : "Your route"}</b><small>${esc(sub)}</small></div>
+        <button type="button" class="arr" id="next" aria-label="${trip.alt + 1 < nav.n ? "Next route" : "Find another route"}" ${trip.alt + 1 < nav.n || nav.more ? "" : "disabled"}>›</button>
       </div>
-      <p class="desc">${describe(trip, o, chosen, rideTitle(trip), backWord)}</p>
-      ${trip.stats ? surfaceBar(trip.stats) : ""}
-      <div class="ai" id="ai" aria-live="polite">${aiHtml(trip.descs?.[chosen])}</div>
-      <div class="links"><button type="button" class="linkbtn" id="describe" ${trip.descs?.[chosen] ? "hidden" : ""}>Description</button>
-        <button type="button" class="linkbtn" id="share">Share</button>
+      <p class="rsum"><span class="vpill l${o.level}">${["✓", "!", "×"][o.level]} ${VERDICT[o.level].title}</span>
+        ${miles(trip.route.distance)} mi · ${duration(trip.route.duration)} · leave ${chosen === 0 ? "now" : clock(o.dep)}, ${backWord} ${clock(o.arrive)}${climb ? ` · ↗ ${Math.round(climb)} m` : ""}</p>
+      ${risksHtml(trip, o)}
+      ${aiBox(trip, chosen)}
+      <div class="links"><button type="button" class="linkbtn" id="share">Share</button>
         ${trip.to ? `<button type="button" class="linkbtn" data-save="home">Save as Home</button><button type="button" class="linkbtn" data-save="work">Save as Work</button>` : ""}</div>
     </div>
     <div class="card ${anim(1)}"><h2 class="ch">When to leave${trip.best !== chosen ? ` · best ${trip.best === 0 ? "now" : clock(best.dep)}` : ""}</h2>
@@ -57,12 +59,33 @@ function tripHtml(trip, chosen, first) {
     </details>`;
 }
 
-// The route in one paragraph: verdict, distance and time, weather, roads, hills, cafés.
-function describe(trip, o, chosen, title, backWord) {
-  const st = trip.stats, when = chosen === 0 ? "now" : `at ${clock(o.dep)}`;
-  const parts = [`<span class="vpill l${o.level}">${["✓", "!", "×"][o.level]} ${VERDICT[o.level].title}</span>`,
-    `${esc(title)}: ${miles(trip.route.distance)} mi, about ${duration(trip.route.duration)}, ${backWord} ${clock(o.arrive)} if you leave ${when}.`,
-    esc(o.summary)];
+// A point's worst hazard in a word or two (the API lists each point's hazard kinds, worst first).
+function pointHazard(p) {
+  return HAZARD_WORD[p.kinds?.[0]] || VERDICT[p.level].title;
+}
+
+// Risk points: a pill for each weather point with a hazard (at most 5, the worst), in order along the route.
+function risksHtml(trip, o) {
+  const risky = o.pts.map((p, k) => ({ p, k })).filter(({ p }) => p.level > 0);
+  if (!risky.length) return "";
+  const shown = [...risky].sort((a, b) => b.p.level - a.p.level || a.k - b.k).slice(0, 5).sort((a, b) => a.k - b.k);
+  const where = (k) => (k === 0 ? "start" : k === o.pts.length - 1 ? (trip.ride === "loop" ? "home" : "end") : `mi ${miles(o.pts[k].dist)}`);
+  return `<div class="risks" role="group" aria-label="Risk points">${shown.map(({ p, k }) =>
+    `<button type="button" class="risk l${p.level}" data-pt="${k}" title="Show on the map"><b class="tg">${["", "!", "×"][p.level]}</b>${clock(p.eta)} <small>${where(k)}</small> ${esc(pointHazard(p))}</button>`).join("")}</div>`;
+}
+
+// The AI-written briefing for departure `chosen`: being written, written, or (if that failed) our own summary instead.
+function aiBox(trip, chosen) {
+  const text = trip.descs?.[chosen], err = trip.descErr?.[chosen];
+  if (text) return `<div class="ai" id="ai" aria-live="polite"><p>${esc(text)}</p><small>Written by AI from this route and forecast. It can get things wrong: the verdict and details above come first.</small></div>`;
+  if (err) return `<div class="ai" id="ai" aria-live="polite"><p>${describe(trip, trip.options[chosen], chosen)}</p><small>${esc(err)} <button type="button" class="retry" id="ai-retry">Try again</button></small></div>`;
+  return `<div class="ai writing" id="ai" aria-live="polite"><p>Writing your ride briefing</p></div>`;
+}
+
+// The route in a few sentences, without AI: weather, roads, hills, cafés. Shown only when the AI briefing isn't available.
+function describe(trip, o) {
+  const st = trip.stats;
+  const parts = [esc(o.summary)];
   if (st) {
     const main = ["quiet", "path"].filter((k) => st.pct[k] >= 5).map((k) => `${{ quiet: "quiet roads", path: "cycle paths" }[k]} (${Math.round(st.pct[k])}%)`);
     const extra = [];
@@ -74,23 +97,11 @@ function describe(trip, o, chosen, title, backWord) {
     const p0 = o.pts[0], rain6 = p0.h.precipitation.slice(Math.max(0, p0.at - PAST_HOURS), p0.at + 1).reduce((a, b) => a + (b ?? 0), 0);
     if (rough + st.metres.unknown > 800 && rain6 >= 1) parts.push("Unpaved stretches will be muddy after the recent rain.");
   }
-  if (trip.route.climb) parts.push(`${Math.round(trip.route.climb)} m of climbing.`);
   if (trip.bike !== "motorbike" && trip.opts.cafe) {
     const c = trip.cafes.length;
     parts.push(c ? `${c} café${c > 1 ? "s" : ""} on the way: tap ☕ on the map.` : trip.option.cafeError ? "Café search isn't responding right now." : "No cafés right on the route.");
   }
   return parts.join(" ");
-}
-
-// The AI-written description (asked for with the Description button), labelled as such.
-function aiHtml(text) {
-  return text ? `<p>${esc(text)}</p><small>Written by AI from this route and forecast. It can get things wrong: the verdict and details above come first.</small>` : "";
-}
-
-function surfaceBar(st) {
-  const shown = SURFACES.filter((x) => st.metres[x.id] >= 50);
-  return `<div class="sbar" role="img" aria-label="${shown.map((x) => `${x.name} ${Math.round(st.pct[x.id])}%`).join(", ")}">${shown.map((x) => `<i style="width:${st.pct[x.id]}%;background:${x.colour}"></i>`).join("")}</div>
-    <div class="skey">${shown.map((x) => `<span><i class="sw" style="background:${x.colour}"></i>${x.name} ${st.pct[x.id] < 1 ? "<1" : Math.round(st.pct[x.id])}%</span>`).join("")}</div>`;
 }
 
 function issuesHtml(trip, st) {
@@ -136,4 +147,4 @@ function profileHtml(trip) {
     <div class="stats-line"><span>↗ ${st.up} m climbing</span><span>↘ ${st.down} m descending</span><span>${st.min}–${st.max} m high</span>${trip.bike !== "motorbike" && st.up / (total / MILE) > 25 ? "<span>Hilly: allow extra time</span>" : ""}</div></div>`;
 }
 
-export { BIKE_NAME, rideTitle, tripHtml, aiHtml, cafePopup };
+export { BIKE_NAME, rideTitle, tripHtml, aiBox, pointHazard, cafePopup };

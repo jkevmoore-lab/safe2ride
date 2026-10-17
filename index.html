@@ -54,11 +54,12 @@
   .side { display: contents; }
   .top { position: fixed; z-index: 500; top: calc(10px + env(safe-area-inset-top, 0px)); left: 10px; right: 10px; }
   .search { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px; display: grid; gap: 8px; }
-  .brandrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .brandrow { display: flex; align-items: center; gap: 8px; }
+  .brandrow .toggle { margin-left: auto; }
   .brand { display: flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: -0.02em; color: var(--ink); text-decoration: none; }
   .brand svg { width: 28px; height: 28px; }
   .toggle { display: inline-flex; background: var(--sand); border-radius: 999px; padding: 3px; }
-  .toggle button { border: 0; background: none; color: var(--muted); font-weight: 700; font-size: .875rem; padding: 8px 14px; min-height: 40px; border-radius: 999px; cursor: pointer; }
+  .toggle button { border: 0; background: none; color: var(--muted); font-weight: 700; font-size: .875rem; padding: 8px 12px; min-height: 40px; border-radius: 999px; cursor: pointer; }
   .toggle button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.12); }
   .field { position: relative; display: flex; align-items: center; gap: 10px; background: var(--sand); border-radius: 14px; padding: 2px 4px 2px 14px; }
   .field .dot { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 3px solid var(--moss); }
@@ -89,12 +90,13 @@
   .chip select { border: 0; background: none; color: var(--ink); font: inherit; font-weight: 700; padding: 0 2px; cursor: pointer; outline-offset: 2px; }
   .chip svg { width: 18px; height: 18px; color: var(--moss); }
 
-  .go-btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; border: 0; cursor: pointer; min-height: 48px;
-    padding: 12px 18px; border-radius: 999px; font-size: 1rem; font-weight: 800; background: var(--lime); color: var(--lime-ink);
+  /* Plan / Update: a compact pill beside the logo */
+  .go-btn { flex: none; display: flex; align-items: center; justify-content: center; gap: 6px; border: 0; cursor: pointer; min-height: 40px;
+    padding: 8px 14px; border-radius: 999px; font-size: .875rem; font-weight: 800; background: var(--lime); color: var(--lime-ink);
     box-shadow: inset 0 0 0 2px var(--lime-edge); transition: transform .15s; }
   .go-btn:active { transform: scale(.98); }
   .go-btn:disabled { cursor: wait; }
-  .go-btn .spin { display: none; width: 18px; height: 18px; border: 3px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+  .go-btn .spin { display: none; width: 14px; height: 14px; border: 3px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
   .go-btn.loading .spin { display: block; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -178,8 +180,6 @@
   .linkbtn:hover { opacity: 1; }
 
   /* Surface breakdown */
-  .sbar { display: flex; height: 12px; border-radius: 999px; overflow: hidden; margin: 4px 0 6px; background: var(--line); }
-  .sbar i { display: block; height: 100%; }
   .slist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: .9rem; }
   .slist li { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; }
   .sw { width: 22px; height: 10px; border-radius: 3px; }
@@ -196,15 +196,31 @@
   .rt b { display: block; font-size: 1rem; } .rt small { color: var(--muted); font-size: .8125rem; }
   .arr { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: var(--sand); color: var(--ink); font-size: 1.6rem; line-height: 1; cursor: pointer; }
   .arr:disabled { opacity: .3; cursor: default; }
-  .desc { margin: 0 0 10px; font-size: .9375rem; line-height: 1.5; }
+  .rsum { margin: 0 0 8px; font-size: .9375rem; font-weight: 600; }
+  .ai.writing p { color: var(--muted); }
+  .ai.writing p::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: dots 1.2s steps(4) infinite; }
+  @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+  .ai .retry { margin-left: 6px; border: 0; background: none; color: var(--moss); font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; padding: 0; }
+  /* Risk points: one pill per point with a hazard, tap to see it on the map */
+  .risks { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+  .risk { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 999px;
+    padding: 4px 10px 4px 4px; min-height: 32px; font: inherit; font-size: .8125rem; font-weight: 700; cursor: pointer; }
+  .risk .tg { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: #fff; font-size: 12px; }
+  .risk.l1 { border-color: var(--care); } .risk.l1 .tg { background: var(--care-text); }
+  .risk.l2 { border-color: var(--stop); } .risk.l2 .tg { background: var(--stop-text); }
+  .risk small { color: var(--muted); font-weight: 600; font-size: inherit; }
+  /* Route colour key, on the map */
+  .rkey { position: fixed; z-index: 400; right: 10px; display: grid; gap: 2px; padding: 5px 8px; border-radius: 10px; background: color-mix(in srgb, var(--card) 88%, transparent);
+    box-shadow: 0 1px 6px rgba(0,0,0,.18); font: 700 11px/1.25 "Plus Jakarta Sans", system-ui, sans-serif; color: var(--ink); pointer-events: none; }
+  .rkey span { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .rkey i { display: inline-block; width: 16px; height: 4px; border-radius: 2px; }
+  .rkey small { color: var(--muted); font-weight: 600; font-size: inherit; }
   .ai:not(:empty) { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid var(--moss); background: var(--sand); border-radius: 0 10px 10px 0; }
   .ai p { margin: 0 0 6px; font-size: .9375rem; line-height: 1.55; }
   .ai small { color: var(--muted); font-size: .75rem; }
   .vpill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 800; font-size: .875rem; margin-right: 4px; color: #fff; }
   .vpill.l0 { background: var(--go-text); } .vpill.l1 { background: var(--care-text); } .vpill.l2 { background: var(--stop-text); }
   @media (prefers-color-scheme: dark) { .vpill { color: var(--card); } }
-  .skey { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .8125rem; color: var(--muted); font-weight: 600; }
-  .skey .sw { display: inline-block; width: 14px; height: 8px; margin-right: 5px; vertical-align: 1px; }
   .more summary { cursor: pointer; font-weight: 800; list-style: none; display: flex; justify-content: space-between; align-items: center; min-height: 40px; }
   .more summary::after { content: "+"; font-size: 1.4rem; color: var(--moss); }
   .more[open] summary::after { content: "−"; }
@@ -290,6 +306,7 @@
     font: 700 13px/1 "Plus Jakarta Sans", system-ui, sans-serif; white-space: nowrap; animation: pop .35s cubic-bezier(.3,1.4,.5,1) both; }
   .wchip.b1 { border-color: var(--care); } .wchip.b2 { border-color: var(--stop); }
   .wchip > svg { width: 17px; height: 17px; color: var(--moss); }
+  .wchip .eta { color: var(--muted); font-weight: 700; margin-right: 2px; }
   .wchip .tg { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: #fff; font-size: 11px; }
   .wchip.b1 .tg { background: var(--care-text); } .wchip.b2 .tg { background: var(--stop-text); }
   @keyframes pop { from { opacity: 0; } }
@@ -334,6 +351,7 @@
 </head>
 <body>
 <div id="map" role="region" aria-label="Map"></div>
+<div class="rkey" id="rkey" hidden aria-label="Route colours"></div>
 
 <div class="side">
   <div class="top" id="top">
@@ -344,6 +362,7 @@
           <svg viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="12" fill="#14382b"/><path d="M8 27c5-9 9 2 14-6s8-6 10-8" fill="none" stroke="#a4d65e" stroke-width="3.2" stroke-linecap="round"/><circle cx="32" cy="13" r="3.4" fill="#fff"/></svg>
           Safe2Ride
         </a>
+        <button class="go-btn" id="plan"><span class="spin" aria-hidden="true"></span><span class="btn-text">Plan</span></button>
         <div class="toggle" role="group" aria-label="Ride type">
           <button type="button" id="m-ab" aria-pressed="true">A → B</button>
           <button type="button" id="m-loop" aria-pressed="false">Loop</button>
@@ -367,12 +386,9 @@
       <div class="chips" role="group" aria-label="Ride options">
         <label class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5.5" cy="16.5" r="3.5"/><circle cx="18.5" cy="16.5" r="3.5"/><path d="M5.5 16.5 9 9h6l3.5 7.5M9 9l3 7.5h-6.5M14 5h2.5L15 9"/></svg>
           <select id="bike" aria-label="Bike type"><option value="road">Road bike</option><option value="gravel">Gravel / hybrid</option><option value="mtb">Mountain bike</option><option value="motorbike">Motorbike</option></select></label>
-        <label class="chip" data-cycle><input type="checkbox" id="opt-busy" checked>Avoid busy roads</label>
         <label class="chip" data-cycle><input type="checkbox" id="opt-offroad">Allow off-road</label>
         <label class="chip" data-cycle><input type="checkbox" id="opt-cafe" checked>Café stop</label>
-        <label class="chip" data-cycle><input type="checkbox" id="opt-flat">Prefer flat</label>
       </div>
-      <button class="go-btn" id="plan"><span class="spin" aria-hidden="true"></span><span class="btn-text">Plan my ride</span></button>
     </div>
   </div>
 
@@ -401,16 +417,16 @@
      The pre-commit hook (.githooks/pre-commit) bumps every ?v= here when a .js file changes. -->
 <script type="importmap">
 { "imports": {
-  "./logic.js": "./logic.js?v=202610171043",
-  "./route.js": "./route.js?v=202610171043",
-  "./loop.js": "./loop.js?v=202610171043",
-  "./api.js": "./api.js?v=202610171043",
-  "./share.js": "./share.js?v=202610171043",
-  "./app.js": "./app.js?v=202610171043",
-  "./map.js": "./map.js?v=202610171043",
-  "./render.js": "./render.js?v=202610171043",
-  "./describe.js": "./describe.js?v=202610171043",
-  "./ui.js": "./ui.js?v=202610171043"
+  "./logic.js": "./logic.js?v=202610171121",
+  "./route.js": "./route.js?v=202610171121",
+  "./loop.js": "./loop.js?v=202610171121",
+  "./api.js": "./api.js?v=202610171121",
+  "./share.js": "./share.js?v=202610171121",
+  "./app.js": "./app.js?v=202610171121",
+  "./map.js": "./map.js?v=202610171121",
+  "./render.js": "./render.js?v=202610171121",
+  "./describe.js": "./describe.js?v=202610171121",
+  "./ui.js": "./ui.js?v=202610171121"
 } }
 </script>
 <script type="module">import "./ui.js";</script>
