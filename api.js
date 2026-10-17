@@ -15,6 +15,7 @@ async function callApi(path, body) {
   const j = await res.json().catch(() => ({}));
   if (res.status === 409 && j.code === "version") throw new Error("Safe2Ride has been updated. Please refresh the page.");
   if (res.status === 429) throw new Error(j.error || "Too many checks at once. Please wait a minute and try again.");
+  if (res.status === 502 || res.status === 503) throw new Error(j.error || "The Safe2Ride service isn't available right now. Please try again later.");
   if (!res.ok) throw new Error("The Safe2Ride service had a problem. Please try again in a moment.");
   return j;
 }
@@ -28,10 +29,11 @@ function assessHere(hourly, mode) {
 // Departure options along a route, shaped as the rest of the site expects: each point carries its
 // checkpoint and weather (pts[k].h, .at), each stretch links the points either side (segs[k].from, .to).
 // Replies are joined by their checkpoint index k, never by position in the list.
+const localTz = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+const slimCps = (cps) => cps.map(({ lat, lon, t, dist }) => ({ lat, lon, t, dist }));
+
 async function assessRoute(cps, wx, mode, now) {
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const slim = cps.map(({ lat, lon, t, dist }) => ({ lat, lon, t, dist }));
-  const { options, best } = await callApi("/assess/route", { mode, now, tz, cps: slim, wx });
+  const { options, best } = await callApi("/assess/route", { mode, now, tz: localTz(), cps: slimCps(cps), wx });
   options.forEach((o) => {
     const pts = [];
     o.pts.forEach((p) => { pts[p.k] = { ...cps[p.k], h: wx[p.k], ...p }; });
@@ -42,4 +44,12 @@ async function assessRoute(cps, wx, mode, now) {
   return { options, best };
 }
 
-export { API_VERSION, assessHere, assessRoute };
+// The AI-written "what to expect" paragraph for departure `dep` of a ride already checked with assessRoute()
+// (same checkpoints, weather and `now`). `route` is the facts from describe.js. Returns the text.
+async function describeRoute(cps, wx, mode, now, dep, route) {
+  const { text } = await callApi("/describe/route", { mode, now, tz: localTz(), cps: slimCps(cps), wx, dep, route });
+  if (typeof text !== "string" || !text) throw new Error("The Safe2Ride service had a problem. Please try again in a moment.");
+  return text;
+}
+
+export { API_VERSION, assessHere, assessRoute, describeRoute };

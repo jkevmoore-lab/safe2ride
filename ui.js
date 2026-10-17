@@ -5,11 +5,12 @@ import { PAST_HOURS, fetchWeather, fetchPlace } from "./logic.js";
 import { SURFACE, SURFACE_FIT, routeCalls, searchPlaces, fetchRoute, makeCheckpoints, fetchElevation, fetchRouteWeather, forecastHoursFor,
   cycleProfile, fetchCycleRoute, surfaceStats } from "./route.js";
 import { cafesOnRoute, planLoop, addCafeStop } from "./loop.js";
-import { assessHere, assessRoute } from "./api.js";
+import { assessHere, assessRoute, describeRoute } from "./api.js";
+import { routeNames, publicName, rideFacts } from "./describe.js";
 import { BIKES, shareHash, parseShare } from "./share.js";
 import { $, store, setStatus, esc, getPosition, countUp, hereHtml, renderHow } from "./app.js";
 import { map, mapReady, ROUTE_LAYERS, isWide, popup, fitTo, clearMap, drawTrip, me, showMe, followMe, askCompass } from "./map.js";
-import { BIKE_NAME, rideTitle, tripHtml, cafePopup } from "./render.js";
+import { BIKE_NAME, rideTitle, tripHtml, aiHtml, cafePopup } from "./render.js";
 
 const panel = $("panel"), body = $("panel-body"), planBtn = $("plan"), fromIn = $("from"), toIn = $("to");
 let fromSel = null, toSel = null;     // fromSel null = "my location"
@@ -289,7 +290,7 @@ async function analyse(option, ctx, k) {
   if (!p.options.length) throw new Error("That ride is longer than the forecast covers. Try a shorter route.");
   const cafes = option.cafeList?.length ? cafesOnRoute(route, option.cafeList, now) : [];
   if (option.cafe && !cafes.some((c) => c.name === option.cafe.name)) cafes.push(...cafesOnRoute(route, [option.cafe], now, 400));
-  return { ...ctx, ...p, option, route, cps, elev, alt: k, cafes: cafes.sort((a, b) => a.dist - b.dist),
+  return { ...ctx, ...p, now, descs: {}, names: null, option, route, cps, elev, alt: k, cafes: cafes.sort((a, b) => a.dist - b.dist),
     stats: route.cls ? surfaceStats(route, ctx.bike) : null };
 }
 
@@ -365,11 +366,33 @@ function renderTrip(first, fit) {
   $("next").addEventListener("click", () => chooseAlt(trip.alt + 1));
   body.querySelectorAll(".dep").forEach((b) => b.addEventListener("click", () => { chosen = +b.dataset.i; renderTrip(false, false); }));
   $("share").addEventListener("click", shareRide);
+  $("describe").addEventListener("click", describeTrip);
   body.querySelectorAll("[data-save]").forEach((b) => b.addEventListener("click", () => saveAs(b.dataset.save)));
   countUp(body);
   if (first) { setCollapsed(true, rideTitle(trip)); setSheet("half"); }
   const o = trip.options[chosen];
   mapReady.then(() => drawTrip(trip, o, fit, (c) => cafePopup(trip, chosen, c)));
+}
+
+// --- Description: an AI-written paragraph on what to expect, only when asked for -----------
+// Kept per departure on the trip, so switching back and forth doesn't ask again. Runs alongside other jobs:
+// if the ride or departure on show changes meanwhile, the text is kept for later but not shown.
+
+async function describeTrip() {
+  const t = trip, k = chosen, o = t?.options[k], btn = $("describe");
+  if (!o || btn.disabled) return;
+  btn.disabled = true; btn.textContent = "Writing…";
+  try {
+    const names = t.names || (t.names = await routeNames(t.route));
+    const [start, end] = await Promise.all([publicName(t.from), publicName(t.to)]);
+    const wx = t.cps.map((_, i) => o.pts[i].h);
+    t.descs[k] = await describeRoute(t.cps, wx, t.bike === "motorbike" ? "motorbike" : "bicycle", t.now, o.dep, rideFacts(t, o, names, start, end));
+    if (trip === t && chosen === k) { $("ai").innerHTML = aiHtml(t.descs[k]); $("describe").hidden = true; }
+  } catch (e) {
+    if (trip === t) setStatus(e.message || "Couldn't write a description right now. Please try again.", true);
+  } finally {
+    if (trip === t && chosen === k && !t.descs[k]) { btn.disabled = false; btn.textContent = "Description"; }
+  }
 }
 
 // --- "Safe to ride here?" --------------------------------------------------------------

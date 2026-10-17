@@ -96,6 +96,7 @@ async function openPage(hash = "", opts = {}) {
     const body = JSON.parse(r.request().postData()), p = new URL(r.request().url()).pathname;
     calls.api.push({ path: p, body });
     if (opts.api) { const [status, reply] = opts.api(p, body); return json(r, reply, status); }
+    if (p === "/describe/route") return json(r, { v: 2, text: `A gentle ride from ${body.route.start} to ${body.route.end}.` });
     return json(r, p === "/assess/here" ? assessHere(body) : assessRoute(body));
   });
   await page.goto(base + "index.html" + hash);
@@ -126,6 +127,30 @@ test("A → B: pick a destination and get a route with departure times", async (
   const route = calls.api.find((c) => c.path === "/assess/route").body;
   assert.equal(route.v, 2);
   assert.match(page.url(), /#r=/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test("Description: asked for only on a tap, written once per departure, home kept private", async () => {
+  const { page, ctx, errors, calls } = await openPage();
+  await page.fill("#to", "Burford");
+  await page.click("#to-sug li");
+  await page.waitForSelector(".rdlg .desc");
+  assert.equal(calls.api.filter((c) => c.path === "/describe/route").length, 0, "nothing is written until asked");
+  await page.click("#describe");
+  await page.waitForSelector(".ai p");
+  assert.equal(await page.textContent(".ai p"), "A gentle ride from Witney to Burford.");
+  assert.match(await page.textContent(".ai small"), /Written by AI/);
+  assert.ok(await page.locator("#describe").isHidden());
+  const sent = calls.api.find((c) => c.path === "/describe/route").body;
+  assert.equal(sent.v, 2);
+  assert.equal(sent.dep, calls.api.find((c) => c.path === "/assess/route").body.now);
+  assert.doesNotMatch(JSON.stringify(sent.route), /Your location|51\.785|-1\.485/, "the route facts never name or pinpoint home");
+  // Away to another departure time (if there is one) and back: the same text, no second call.
+  const deps = await page.locator(".dep").count();
+  if (deps > 1) { await page.locator(".dep").nth(1).click(); await page.locator(".dep").nth(0).click(); }
+  assert.equal(await page.textContent(".ai p"), "A gentle ride from Witney to Burford.");
+  assert.equal(calls.api.filter((c) => c.path === "/describe/route").length, 1);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

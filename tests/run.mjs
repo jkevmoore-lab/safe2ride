@@ -7,8 +7,9 @@ import * as loopJs from "../loop.js";
 import * as apiJs from "../api.js";
 import * as shareJs from "../share.js";
 import * as appJs from "../app.js";
+import * as describeJs from "../describe.js";
 
-const S = { ...logicJs, ...routeJs, ...loopJs, ...apiJs, ...shareJs, ...appJs };
+const S = { ...logicJs, ...routeJs, ...loopJs, ...apiJs, ...shareJs, ...appJs, ...describeJs };
 
 // Browsers send a User-Agent automatically; Node doesn't, and some map services require one.
 const realFetch = globalThis.fetch;
@@ -93,6 +94,66 @@ test("checkpoints span the route", () => {
     assert.match(old, /refresh the page/);
     assert.match(short, /had a problem/);
   });
+}
+
+// Route descriptions (describe.js and api.js): what's looked up and sent, with every service faked.
+{
+  const contract = JSON.parse(fs.readFileSync(new URL("../contract/v2.json", import.meta.url), "utf8")).endpoints["POST /describe/route"];
+  const route = { coords: [[51.78, -1.49], [51.78, -1.40], [51.80, -1.30]], cumD: [0, 6000, 14000], cumT: [0, 900, 2100], distance: 14000, duration: 2100, climb: 85 };
+  const trip = { ride: "ab", bike: "road", route, elev: { d: [0, 7000, 14000], z: [90, 140, 100] },
+    stats: { pct: { quiet: 70.04, busy: 29.96 }, issues: [{ cls: "busy", level: 1, start: 4000, len: 4200 }] },
+    cafes: [{ name: "Huffkins", dist: 13000, t: 1950, hours: "Mo-Su 08:00-17:00", chain: false }] };
+  const saved = globalThis.fetch, asked = [];
+  globalThis.fetch = async (url) => {
+    asked.push(String(url));
+    if (/photon.*reverse/.test(url)) {
+      const n = asked.filter((u) => /reverse/.test(u)).length;
+      if (n === 3) return new Response("", { status: 500 });                   // a failed lookup is just a gap
+      const everywhere = [-2, 52, -1, 51];                                       // extent: west, north, east, south
+      if (n === 4) return Response.json({ features: [{ properties: { osm_key: "highway", osm_value: "service", name: "Windrush Motors", district: "Witney", extent: everywhere } }] });
+      if (n === 6) return Response.json({ features: [{ properties: { osm_key: "highway", osm_value: "primary", name: "Far Away Road", city: "Burford", extent: [0, 1, 0.1, 0.9] } }] });
+      return Response.json({ features: [{ properties: n <= 5 ? { osm_key: "highway", osm_value: "unclassified", name: "Burford Road", district: "Witney", city: "West Oxfordshire", extent: everywhere }
+        : { osm_key: "highway", osm_value: "tertiary", name: "B4047", city: "Burford", extent: everywhere } }] });
+    }
+    if (/bigdatacloud/.test(url)) return Response.json({ locality: "Witney" });
+    return Response.json({ v: 2, text: "A gentle ride." });
+  };
+  const names = await S.routeNames(route);
+  const mine = await S.publicName({ name: "Your location", lat: 51.7856, lon: -1.4857 });
+  const named = await S.publicName({ name: "Burford", lat: 51.8, lon: -1.6 });
+  const dep = Date.UTC(2026, 9, 17, 9, 0) / 1000;
+  const facts = S.rideFacts(trip, { dep }, names, mine, named);
+  asked.length = 0;
+  let sent;
+  globalThis.fetch = async (url, init) => { sent = { url, ...JSON.parse(init.body) }; return Response.json({ v: 2, text: "A gentle ride." }); };
+  const text = await S.describeRoute([{ lat: 1, lon: 2, t: 0, dist: 0, h: {}, gi: 4 }], [{ time: [1] }], "bicycle", dep - 60, dep, facts);
+  globalThis.fetch = async () => Response.json({ error: "Route descriptions aren't available right now. Please try again later." }, { status: 503 });
+  const off = await S.describeRoute([], [], "bicycle", 0, 0, facts).catch((e) => e.message);
+  globalThis.fetch = saved;
+  test("towns and roads along the route come out in order, without repeats, gaps, councils or driveways", () => {
+    assert.deepEqual(names, { places: ["Witney", "Burford"], roads: ["Burford Road", "B4047"] });
+  });
+  test("your own location is sent only as the nearest town", () => {
+    assert.equal(mine, "Witney");
+    assert.equal(named, "Burford");
+  });
+  test("the route facts are the ones the contract lists, rounded for reading", () => {
+    assert.deepEqual(Object.keys(facts), contract.route);
+    assert.deepEqual(Object.keys(facts.issues[0]), contract.issue);
+    assert.deepEqual(Object.keys(facts.cafes[0]), contract.cafe);
+    assert.deepEqual(Object.keys(facts.hills), contract.hills);
+    assert.deepEqual(facts.surfaces, { quiet: 70, busy: 30 });
+    assert.deepEqual(facts.issues[0], { kind: "busy", level: 1, mile: 2.5, lengthMiles: 2.6 });
+    assert.equal(facts.climbM, 85);
+    assert.equal(facts.cafes[0].mile, 8.1);
+  });
+  test("a description request carries the ride, the departure and the facts, and slim checkpoints", () => {
+    assert.match(sent.url, /\/describe\/route$/);
+    assert.deepEqual(Object.keys(sent).filter((k) => k !== "url"), contract.request);
+    assert.deepEqual(Object.keys(sent.cps[0]), ["lat", "lon", "t", "dist"]);
+    assert.equal(text, "A gentle ride.");
+  });
+  test("when descriptions are switched off the rider is told so", () => assert.match(off, /aren't available/));
 }
 
 console.log("Shared contract with the API");

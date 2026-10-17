@@ -21,9 +21,13 @@
       "segment": ["k", "dist", "hours", "level", "head", "crossGust", "rain"]
     },
     "POST /describe/route": {
-      "status": "planned: not built yet. Runs only when the rider taps Description.",
+      "about": "An AI-written 'what to expect' paragraph. Called only when the rider taps Description. cps, wx, now and tz as for /assess/route; dep is the departure shown. The API re-runs the rules itself. Names are cleaned and shortened; the rider's own address is never sent (start is an area name).",
       "request": ["v", "mode", "now", "tz", "cps", "wx", "dep", "route"],
       "route": ["kind", "bike", "distanceM", "durationS", "climbM", "start", "end", "places", "roads", "surfaces", "issues", "hills", "cafes"],
+      "surfaces": "percent of the distance per class: quiet, path, busy, g1, g2, g3, unknown",
+      "issue": ["kind", "level", "mile", "lengthMiles"],
+      "hills": ["up", "down", "min", "max"],
+      "cafe": ["name", "mile", "open", "chain"],
       "response": ["v", "text"]
     }
   },
@@ -31,6 +35,8 @@
     "400": "bad request: { error }",
     "409": "version mismatch: { error, code: \"version\" }; the site asks the rider to refresh",
     "413": "request too large: { error }",
-    "429": "rate limited: { error }"
+    "429": "rate limited: { error }",
+    "502": "describe only: the AI service failed or didn't answer: { error }",
+    "503": "describe only: descriptions are switched off or over budget: { error }"
   }
 }

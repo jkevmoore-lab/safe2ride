@@ -194,6 +194,9 @@
   .arr { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: var(--sand); color: var(--ink); font-size: 1.6rem; line-height: 1; cursor: pointer; }
   .arr:disabled { opacity: .3; cursor: default; }
   .desc { margin: 0 0 10px; font-size: .9375rem; line-height: 1.5; }
+  .ai:not(:empty) { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid var(--moss); background: var(--sand); border-radius: 0 10px 10px 0; }
+  .ai p { margin: 0 0 6px; font-size: .9375rem; line-height: 1.55; }
+  .ai small { color: var(--muted); font-size: .75rem; }
   .vpill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 800; font-size: .875rem; margin-right: 4px; color: #fff; }
   .vpill.l0 { background: var(--go-text); } .vpill.l1 { background: var(--care-text); } .vpill.l2 { background: var(--stop-text); }
   @media (prefers-color-scheme: dark) { .vpill { color: var(--card); } }
@@ -395,15 +398,16 @@
      The pre-commit hook (.githooks/pre-commit) bumps every ?v= here when a .js file changes. -->
 <script type="importmap">
 { "imports": {
-  "./logic.js": "./logic.js?v=202610170851",
-  "./route.js": "./route.js?v=202610170851",
-  "./loop.js": "./loop.js?v=202610170851",
-  "./api.js": "./api.js?v=202610170851",
-  "./share.js": "./share.js?v=202610170851",
-  "./app.js": "./app.js?v=202610170851",
-  "./map.js": "./map.js?v=202610170851",
-  "./render.js": "./render.js?v=202610170851",
-  "./ui.js": "./ui.js?v=202610170851"
+  "./logic.js": "./logic.js?v=202610171043",
+  "./route.js": "./route.js?v=202610171043",
+  "./loop.js": "./loop.js?v=202610171043",
+  "./api.js": "./api.js?v=202610171043",
+  "./share.js": "./share.js?v=202610171043",
+  "./app.js": "./app.js?v=202610171043",
+  "./map.js": "./map.js?v=202610171043",
+  "./render.js": "./render.js?v=202610171043",
+  "./describe.js": "./describe.js?v=202610171043",
+  "./ui.js": "./ui.js?v=202610171043"
 } }
 </script>
 <script type="module">import "./ui.js";</script>

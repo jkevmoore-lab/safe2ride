@@ -35,7 +35,9 @@ function tripHtml(trip, chosen, first) {
       </div>
       <p class="desc">${describe(trip, o, chosen, rideTitle(trip), backWord)}</p>
       ${trip.stats ? surfaceBar(trip.stats) : ""}
-      <div class="links"><button type="button" class="linkbtn" id="share">Share</button>
+      <div class="ai" id="ai" aria-live="polite">${aiHtml(trip.descs?.[chosen])}</div>
+      <div class="links"><button type="button" class="linkbtn" id="describe" ${trip.descs?.[chosen] ? "hidden" : ""}>Description</button>
+        <button type="button" class="linkbtn" id="share">Share</button>
         ${trip.to ? `<button type="button" class="linkbtn" data-save="home">Save as Home</button><button type="button" class="linkbtn" data-save="work">Save as Work</button>` : ""}</div>
     </div>
     <div class="card ${anim(1)}"><h2 class="ch">When to leave${trip.best !== chosen ? ` · best ${trip.best === 0 ? "now" : clock(best.dep)}` : ""}</h2>
@@ -78,6 +80,11 @@ function describe(trip, o, chosen, title, backWord) {
     parts.push(c ? `${c} café${c > 1 ? "s" : ""} on the way: tap ☕ on the map.` : trip.option.cafeError ? "Café search isn't responding right now." : "No cafés right on the route.");
   }
   return parts.join(" ");
+}
+
+// The AI-written description (asked for with the Description button), labelled as such.
+function aiHtml(text) {
+  return text ? `<p>${esc(text)}</p><small>Written by AI from this route and forecast. It can get things wrong: the verdict and details above come first.</small>` : "";
 }
 
 function surfaceBar(st) {
@@ -129,4 +136,4 @@ function profileHtml(trip) {
     <div class="stats-line"><span>↗ ${st.up} m climbing</span><span>↘ ${st.down} m descending</span><span>${st.min}–${st.max} m high</span>${trip.bike !== "motorbike" && st.up / (total / MILE) > 25 ? "<span>Hilly: allow extra time</span>" : ""}</div></div>`;
 }
 
-export { BIKE_NAME, rideTitle, tripHtml, cafePopup };
+export { BIKE_NAME, rideTitle, tripHtml, aiHtml, cafePopup };
