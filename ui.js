@@ -28,6 +28,8 @@ const mapReady = new Promise((resolve) => map.on("load", () => {
   const empty = { type: "FeatureCollection", features: [] };
   map.addSource("route", { type: "geojson", data: empty });
   map.addSource("alts", { type: "geojson", data: empty });
+  map.addSource("me-acc", { type: "geojson", data: empty });
+  map.addLayer({ id: "me-acc", type: "fill", source: "me-acc", paint: { "fill-color": "#1a73e8", "fill-opacity": 0.12 } }, firstLabel);
   map.addLayer({ id: "alts", type: "line", source: "alts", layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": "#5f6f67", "line-width": 5, "line-opacity": 0.45, "line-dasharray": [0.6, 1.6] } }, firstLabel);
   map.addLayer({ id: "route-casing", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" },
@@ -155,6 +157,61 @@ $("loop-len").addEventListener("input", (e) => { prefs.miles = +e.target.value; 
 $("loop-len").addEventListener("change", savePrefs);
 setRide(prefs.ride); syncControls();
 
+// --- Your location: blue dot, accuracy halo, and a cone showing which way the phone points ---------
+
+// Starts once location is allowed (we never ask on page load) and keeps following you while the page is open.
+const meEl = div("me-dot", '<div class="me-cone"></div><div class="me-core"></div>');
+const meMarker = new maplibregl.Marker({ element: meEl, rotationAlignment: "map" });
+let meWatch = null, meHeading = null, meAt = null, meNote = "", meShown = false;
+meEl.addEventListener("click", (e) => {
+  e.stopPropagation(); askCompass();
+  if (meAt) { hoverPop?.remove(); hoverPop = popup(meNote || "<b>You're here</b>", [meAt.lon, meAt.lat], 14); }
+});
+
+function showMe(lat, lon, acc) {
+  meAt = { lat, lon };
+  myPos = [lat, lon];
+  meMarker.setLngLat([lon, lat]);
+  if (!meShown) { meMarker.addTo(map); meShown = true; }
+  const ring = { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [Array.from({ length: 49 }, (_, i) => {
+    const p = destPoint(lat, lon, (i % 48) * 7.5, Math.min(acc || 0, 2000)); return [p.lon, p.lat]; })] } };
+  mapReady.then(() => map.getSource("me-acc").setData(acc > 15 ? ring : { type: "FeatureCollection", features: [] }));
+}
+
+function followMe() {
+  if (meWatch !== null || !navigator.geolocation) return;
+  meWatch = navigator.geolocation.watchPosition((p) => {
+    const c = p.coords;
+    showMe(c.latitude, c.longitude, c.accuracy);
+    // Moving and no compass: point the way you're travelling.
+    if (meHeading === null && c.heading != null && !Number.isNaN(c.heading) && c.speed > 1) setHeading(c.heading, true);
+  }, () => {}, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+}
+
+// Compass, smoothed so the cone doesn't jitter. Android gives it straight away; iPhones ask on a tap.
+let coneShown = null;
+function setHeading(deg, fromGps = false) {
+  if (!fromGps) meHeading = deg;
+  coneShown = coneShown === null ? deg : coneShown + ((((deg - coneShown) % 360) + 540) % 360 - 180) * 0.25;
+  meEl.classList.add("has-heading");
+  meMarker.setRotation((coneShown + 360) % 360);
+}
+function onCompass(e) {
+  const screenAngle = screen.orientation?.angle ?? window.orientation ?? 0;
+  if (e.webkitCompassHeading != null) setHeading(e.webkitCompassHeading + screenAngle);
+  else if (e.absolute && e.alpha != null) setHeading(360 - e.alpha + screenAngle);
+}
+// Listen from the start (Android sends readings without asking); iPhones only send them once allowed, which needs a tap.
+addEventListener("deviceorientationabsolute", onCompass);
+addEventListener("deviceorientation", onCompass);
+let compassAsked = false;
+function askCompass() {
+  if (compassAsked || typeof DeviceOrientationEvent?.requestPermission !== "function") return;
+  DeviceOrientationEvent.requestPermission().then((r) => { compassAsked = r === "granted"; }).catch(() => {});
+}
+// Already allowed on an earlier visit? Show the dot straight away.
+navigator.permissions?.query({ name: "geolocation" }).then((s) => { if (s.state === "granted") followMe(); }).catch(() => {});
+
 // --- Results sheet (phones) and search collapse ---------------------------------------
 
 function setSheet(state) { panel.dataset.state = state; document.body.dataset.sheet = state; }
@@ -247,7 +304,7 @@ function autocomplete(input, list, onPick) {
 const fromAc = autocomplete(fromIn, $("from-sug"), (p) => { fromSel = p; if (p && prefs.ride === "loop") plan(); });
 const toAc = autocomplete(toIn, $("to-sug"), (p) => { toSel = p; if (p) plan(); });
 [fromIn, toIn].forEach((el) => el.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.defaultPrevented) plan(); }));
-$("use-loc").addEventListener("click", () => { fromSel = null; fromIn.value = ""; });
+$("use-loc").addEventListener("click", () => { fromSel = null; fromIn.value = ""; askCompass(); });
 $("swap").addEventListener("click", () => {
   const me = myPos ? { lat: myPos[0], lon: myPos[1], name: "Your location", label: "Your location" } : null;
   const a = fromSel || me, b = toSel;
@@ -287,11 +344,12 @@ async function plan() {
   if (planning) return;
   if (prefs.ride === "ab" && !toIn.value.trim() && !toSel) { setCollapsed(false); toIn.focus(); return setStatus("Where are you heading? Type a destination or tap the map."); }
   planning = true;
+  if (!fromSel) askCompass();
   setBusy(true, "Finding the way…");
   const bike = prefs.bike, opts = { avoidBusy: prefs.busy, offroad: prefs.offroad, cafe: prefs.cafe, flat: prefs.flat };
   try {
     const from = fromSel || (fromIn.value.trim() ? (fromSel = await resolvePlace(fromIn, null, fromAc)) : await getPosition());
-    if (!fromSel) myPos = [from.lat, from.lon];
+    if (!fromSel) { myPos = [from.lat, from.lon]; followMe(); }
     store.set("lastCentre", [+from.lat.toFixed(3), +from.lon.toFixed(3)]);
     let option, others = [], to = null;
     if (prefs.ride === "ab") {
@@ -600,15 +658,16 @@ $("here-btn").addEventListener("click", async () => {
   b.classList.add("loading"); b.querySelector("span").textContent = "Checking…";
   setStatus("Finding you…");
   try {
+    askCompass();
     const pos = await getPosition();
-    myPos = [pos.lat, pos.lon];
+    showMe(pos.lat, pos.lon); followMe();
     store.set("lastCentre", [+pos.lat.toFixed(3), +pos.lon.toFixed(3)]);
     setStatus("Reading the sky…");
     const [data, place] = await Promise.all([fetchWeather(pos.lat, pos.lon), fetchPlace(pos.lat, pos.lon)]);
     const a = await assessHere(data.hourly, lim());
     trip = null;
     clearMap();
-    addMarker(div("me"), pos.lat, pos.lon, place ? `<b>You're near ${esc(place)}</b>` : "");
+    meNote = place ? `<b>You're near ${esc(place)}</b>` : "";
     $("intro").hidden = true;
     body.innerHTML = hereHtml(data, place, lim(), a);
     countUp(body);
