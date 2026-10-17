@@ -1,79 +1,19 @@
-// Safe2Ride map-first interface: map, search card, filters, results panel. Uses app.js, route.js and loop.js.
+// Safe2Ride map-first interface: search card, filters, planning and the results panel. The page's entry point.
+// The map and its drawing are in map.js, the route card's HTML in render.js.
 
-const BIKE_NAME = { road: "road bike", gravel: "gravel bike", mtb: "mountain bike", motorbike: "motorbike" };
-const HAZARD_WORD = { storm: "Storms", snow: "Snow", ice: "Ice", wind: "Wind", crosswind: "Wind", headwind: "Headwind",
-  rain: "Rain", soak: "Rain", wet: "Wet roads", fog: "Fog", heat: "Heat", dark: "Dark" };
-const ISSUE_NAME = { busy: "busy road", g1: "smooth track (Grade 1)", g2: "rough track (Grade 2)", g3: "MTB-only track (Grade 3)", unknown: "path with unknown surface" };
-// Dash patterns for unpaved classes, in line widths (MapLibre's unit).
-const DASH = { g1: [1.6, 1], g2: [0.8, 0.9], g3: [0.1, 1.5], unknown: [0.5, 0.8] };
-const isWide = () => matchMedia("(min-width: 900px)").matches;
+import { PAST_HOURS, fetchWeather, fetchPlace } from "./logic.js";
+import { SURFACE, SURFACE_FIT, routeCalls, searchPlaces, fetchRoute, makeCheckpoints, fetchElevation, fetchRouteWeather, forecastHoursFor,
+  cycleProfile, fetchCycleRoute, surfaceStats } from "./route.js";
+import { cafesOnRoute, planLoop, addCafeStop } from "./loop.js";
+import { assessHere, assessRoute } from "./api.js";
+import { BIKES, shareHash, parseShare } from "./share.js";
+import { $, store, setStatus, esc, getPosition, countUp, hereHtml, renderHow } from "./app.js";
+import { map, mapReady, ROUTE_LAYERS, isWide, popup, fitTo, clearMap, drawTrip, me, showMe, followMe, askCompass } from "./map.js";
+import { BIKE_NAME, rideTitle, tripHtml, cafePopup } from "./render.js";
 
 const panel = $("panel"), body = $("panel-body"), planBtn = $("plan"), fromIn = $("from"), toIn = $("to");
-let fromSel = null, toSel = null, myPos = null;     // fromSel null = "my location"
-let trip = null, chosen = 0, chips = [], markers = [];
-
-// --- Map: vector tiles, so road and place names draw above our route ------------------------
-
-const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-const last = store.get("lastCentre", null);
-const map = new maplibregl.Map({
-  container: "map", style: `https://tiles.openfreemap.org/styles/${dark ? "dark" : "positron"}`,
-  center: last ? [last[1], last[0]] : [UK_CENTRE[1], UK_CENTRE[0]], zoom: last ? 11 : 5, attributionControl: false,
-});
-map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '<a href="https://openfreemap.org">OpenFreeMap</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }), isWide() ? "bottom-left" : "top-left");
-if (isWide()) map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-const ROUTE_LAYERS = ["route-solid", ...Object.keys(DASH).map((k) => `route-${k}`)];
-const mapReady = new Promise((resolve) => map.on("load", () => {
-  const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol")?.id;   // route goes under every label
-  const empty = { type: "FeatureCollection", features: [] };
-  map.addSource("route", { type: "geojson", data: empty });
-  map.addSource("alts", { type: "geojson", data: empty });
-  map.addSource("me-acc", { type: "geojson", data: empty });
-  map.addLayer({ id: "me-acc", type: "fill", source: "me-acc", paint: { "fill-color": "#1a73e8", "fill-opacity": 0.12 } }, firstLabel);
-  map.addLayer({ id: "alts", type: "line", source: "alts", layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": "#5f6f67", "line-width": 5, "line-opacity": 0.45, "line-dasharray": [0.6, 1.6] } }, firstLabel);
-  map.addLayer({ id: "route-casing", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": dark ? "#0f1a15" : "#ffffff", "line-width": 10, "line-opacity": 0.9 } }, firstLabel);
-  map.addLayer({ id: "route-solid", type: "line", source: "route", filter: ["==", ["get", "dash"], "none"], layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": ["get", "colour"], "line-width": 6 } }, firstLabel);
-  for (const [k, arr] of Object.entries(DASH)) map.addLayer({ id: `route-${k}`, type: "line", source: "route", filter: ["==", ["get", "dash"], k],
-    layout: { "line-cap": k === "g3" ? "round" : "butt", "line-join": "round" }, paint: { "line-color": ["get", "colour"], "line-width": 6, "line-dasharray": arr } }, firstLabel);
-  // Direction of travel: white chevrons along the route.
-  map.addSource("route-dir", { type: "geojson", data: empty });
-  map.addImage("chevron", chevron(), { pixelRatio: 2 });
-  map.addLayer({ id: "route-dir", type: "symbol", source: "route-dir",
-    layout: { "symbol-placement": "line", "symbol-spacing": 60, "icon-image": "chevron", "icon-rotation-alignment": "map",
-      "icon-allow-overlap": true, "icon-ignore-placement": true }, paint: { "icon-opacity": 0.95 } }, firstLabel);
-  [...ROUTE_LAYERS, "alts"].forEach((id) => { map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer")); map.on("mouseleave", id, () => (map.getCanvas().style.cursor = "")); });
-  resolve();
-}));
-map.on("zoomend", layoutChips);
-
-// A chevron pointing along the line (east = forwards), drawn at 2× for sharp screens.
-function chevron() {
-  const s = 40, c = document.createElement("canvas"); c.width = c.height = s;
-  const g = c.getContext("2d");
-  g.lineCap = g.lineJoin = "round";
-  g.beginPath(); g.moveTo(13, 9); g.lineTo(26, 20); g.lineTo(13, 31);
-  g.strokeStyle = "rgba(15,26,21,.6)"; g.lineWidth = 10; g.stroke();
-  g.strokeStyle = "#fff"; g.lineWidth = 5.5; g.stroke();
-  return g.getImageData(0, 0, s, s);
-}
-
-const popup = (html, at, offset = 14) => new maplibregl.Popup({ closeButton: false, maxWidth: "270px", offset }).setLngLat(at).setHTML(html).addTo(map);
-let hoverPop = null;
-
-// Fit the map to [lat, lon] points, leaving room for the search card and the results sheet on phones.
-function fitTo(points, maxZoom = 15) {
-  const b = new maplibregl.LngLatBounds();
-  points.forEach(([la, lo]) => b.extend([lo, la]));
-  // Use where the sheet is heading, not where it is mid-slide.
-  const H = panel.offsetHeight, peek = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--peek"));
-  const sheet = { peek, half: H * 0.55, full: H }[panel.dataset.state] ?? peek;
-  const pad = isWide() ? { top: 40, bottom: 40, left: 40, right: 60 }
-    : { top: $("top").getBoundingClientRect().bottom + 16, bottom: Math.min(sheet + 16, innerHeight * 0.6), left: 24, right: 24 };
-  map.fitBounds(b, { padding: pad, maxZoom, duration: 600 });
-}
+let fromSel = null, toSel = null;     // fromSel null = "my location"
+let trip = null, chosen = 0;
 
 // Tap the map: what's this stretch of route, switch to another route, or ride / start from here.
 map.on("click", (e) => {
@@ -97,36 +37,19 @@ map.on("click", (e) => {
   }));
 });
 
-// An HTML marker that shows its details on tap, and on hover with a mouse.
-function addMarker(el, lat, lon, html, anchor = "center", offset = 16) {
-  const m = new maplibregl.Marker({ element: el, anchor }).setLngLat([lon, lat]).addTo(map);
-  if (html) {
-    const show = () => { hoverPop?.remove(); hoverPop = popup(typeof html === "function" ? html() : html, [lon, lat], offset); };
-    el.addEventListener("click", (e) => { e.stopPropagation(); show(); });
-    el.addEventListener("mouseenter", () => { if (matchMedia("(hover: hover)").matches) show(); });
-  }
-  markers.push(m);
-  return m;
-}
-function div(cls, html = "") { const d = document.createElement("div"); d.className = cls; d.innerHTML = html; return d; }
-function clearMap() {
-  markers.forEach((m) => m.remove()); markers = [];
-  chips.forEach((c) => c.marker.remove()); chips = [];
-  hoverPop?.remove();
-  // Clear now if the map is ready (drawTrip always is), so a new route drawn straight after isn't wiped.
-  const wipe = () => ["route", "route-dir", "alts"].forEach((id) => map.getSource(id)?.setData({ type: "FeatureCollection", features: [] }));
-  if (map.getSource("route")) wipe(); else mapReady.then(wipe);
-}
-
 // --- Settings (remembered between visits) -----------------------------------------------
 
 const prefs = { ride: "ab", bike: "road", busy: true, offroad: false, cafe: true, flat: false, miles: 25, ...store.get("prefs", {}) };
+if (!BIKES.includes(prefs.bike)) prefs.bike = "road";
 const savePrefs = () => store.set("prefs", prefs);
 const lim = () => (prefs.bike === "motorbike" ? "motorbike" : "bicycle");
 
-$("bike").value = prefs.bike;
-$("opt-busy").checked = prefs.busy; $("opt-offroad").checked = prefs.offroad; $("opt-cafe").checked = prefs.cafe; $("opt-flat").checked = prefs.flat;
-$("loop-len").value = prefs.miles;
+function showPrefs() {
+  $("bike").value = prefs.bike;
+  $("opt-busy").checked = prefs.busy; $("opt-offroad").checked = prefs.offroad; $("opt-cafe").checked = prefs.cafe; $("opt-flat").checked = prefs.flat;
+  $("loop-len").value = prefs.miles;
+}
+showPrefs();
 
 function syncControls() {
   const moto = prefs.bike === "motorbike", road = prefs.bike === "road";
@@ -149,68 +72,14 @@ $("m-loop").addEventListener("click", () => setRide("loop"));
 $("bike").addEventListener("change", (e) => {
   prefs.bike = e.target.value;
   if (prefs.bike === "gravel" || prefs.bike === "mtb") $("opt-offroad").checked = prefs.offroad = true;
-  savePrefs(); syncControls(); if (trip) plan();
+  savePrefs(); syncControls(); if (trip || busy) plan();
 });
+// A change re-plans the ride on show, or the one being planned right now.
 [["opt-busy", "busy"], ["opt-offroad", "offroad"], ["opt-cafe", "cafe"], ["opt-flat", "flat"]].forEach(([id, k]) =>
-  $(id).addEventListener("change", (e) => { prefs[k] = e.target.checked; savePrefs(); if (trip) plan(); }));
+  $(id).addEventListener("change", (e) => { prefs[k] = e.target.checked; savePrefs(); if (trip || busy) plan(); }));
 $("loop-len").addEventListener("input", (e) => { prefs.miles = +e.target.value; $("loop-out").textContent = `${prefs.miles} mi`; });
 $("loop-len").addEventListener("change", savePrefs);
 setRide(prefs.ride); syncControls();
-
-// --- Your location: blue dot, accuracy halo, and a cone showing which way the phone points ---------
-
-// Starts once location is allowed (we never ask on page load) and keeps following you while the page is open.
-const meEl = div("me-dot", '<div class="me-cone"></div><div class="me-core"></div>');
-const meMarker = new maplibregl.Marker({ element: meEl, rotationAlignment: "map" });
-let meWatch = null, meHeading = null, meAt = null, meNote = "", meShown = false;
-meEl.addEventListener("click", (e) => {
-  e.stopPropagation(); askCompass();
-  if (meAt) { hoverPop?.remove(); hoverPop = popup(meNote || "<b>You're here</b>", [meAt.lon, meAt.lat], 14); }
-});
-
-function showMe(lat, lon, acc) {
-  meAt = { lat, lon };
-  myPos = [lat, lon];
-  meMarker.setLngLat([lon, lat]);
-  if (!meShown) { meMarker.addTo(map); meShown = true; }
-  const ring = { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [Array.from({ length: 49 }, (_, i) => {
-    const p = destPoint(lat, lon, (i % 48) * 7.5, Math.min(acc || 0, 2000)); return [p.lon, p.lat]; })] } };
-  mapReady.then(() => map.getSource("me-acc").setData(acc > 15 ? ring : { type: "FeatureCollection", features: [] }));
-}
-
-function followMe() {
-  if (meWatch !== null || !navigator.geolocation) return;
-  meWatch = navigator.geolocation.watchPosition((p) => {
-    const c = p.coords;
-    showMe(c.latitude, c.longitude, c.accuracy);
-    // Moving and no compass: point the way you're travelling.
-    if (meHeading === null && c.heading != null && !Number.isNaN(c.heading) && c.speed > 1) setHeading(c.heading, true);
-  }, () => {}, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
-}
-
-// Compass, smoothed so the cone doesn't jitter. Android gives it straight away; iPhones ask on a tap.
-let coneShown = null;
-function setHeading(deg, fromGps = false) {
-  if (!fromGps) meHeading = deg;
-  coneShown = coneShown === null ? deg : coneShown + ((((deg - coneShown) % 360) + 540) % 360 - 180) * 0.25;
-  meEl.classList.add("has-heading");
-  meMarker.setRotation((coneShown + 360) % 360);
-}
-function onCompass(e) {
-  const screenAngle = screen.orientation?.angle ?? window.orientation ?? 0;
-  if (e.webkitCompassHeading != null) setHeading(e.webkitCompassHeading + screenAngle);
-  else if (e.absolute && e.alpha != null) setHeading(360 - e.alpha + screenAngle);
-}
-// Listen from the start (Android sends readings without asking); iPhones only send them once allowed, which needs a tap.
-addEventListener("deviceorientationabsolute", onCompass);
-addEventListener("deviceorientation", onCompass);
-let compassAsked = false;
-function askCompass() {
-  if (compassAsked || typeof DeviceOrientationEvent?.requestPermission !== "function") return;
-  DeviceOrientationEvent.requestPermission().then((r) => { compassAsked = r === "granted"; }).catch(() => {});
-}
-// Already allowed on an earlier visit? Show the dot straight away.
-navigator.permissions?.query({ name: "geolocation" }).then((s) => { if (s.state === "granted") followMe(); }).catch(() => {});
 
 // --- Results sheet (phones) and search collapse ---------------------------------------
 
@@ -262,7 +131,7 @@ function savedItems() {
   s.recent.forEach((r) => out.push({ ...r, cls: "recent" }));
   return out;
 }
-function here() { return fromSel ? [fromSel.lat, fromSel.lon] : myPos || [map.getCenter().lat, map.getCenter().lng]; }
+function here() { return fromSel ? [fromSel.lat, fromSel.lon] : me.pos || [map.getCenter().lat, map.getCenter().lng]; }
 
 function autocomplete(input, list, onPick) {
   let timer = null, ctrl = null, items = [], active = -1;
@@ -306,8 +175,8 @@ const toAc = autocomplete(toIn, $("to-sug"), (p) => { toSel = p; if (p) plan(); 
 [fromIn, toIn].forEach((el) => el.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.defaultPrevented) plan(); }));
 $("use-loc").addEventListener("click", () => { fromSel = null; fromIn.value = ""; askCompass(); });
 $("swap").addEventListener("click", () => {
-  const me = myPos ? { lat: myPos[0], lon: myPos[1], name: "Your location", label: "Your location" } : null;
-  const a = fromSel || me, b = toSel;
+  const mine = me.pos ? { lat: me.pos[0], lon: me.pos[1], name: "Your location", label: "Your location" } : null;
+  const a = fromSel || mine, b = toSel;
   if (!a) return setStatus("Type a starting point (or plan once from your location) before swapping.");
   fromSel = b; toSel = a; fromIn.value = b ? b.label : ""; toIn.value = a.label;
   if (b) plan();
@@ -326,9 +195,24 @@ async function resolvePlace(input, sel, ac) {
   throw new Error(`Which "${q}" did you mean? Pick one from the list.`);
 }
 
-// --- Planning ---------------------------------------------------------------------------
+// --- One job at a time ---------------------------------------------------------------------
+// Planning, switching route and "Safe to ride here?" take a while. Asking for another while one runs queues it
+// (the latest ask replaces any earlier queued one) and the running job's result is dropped when it finishes:
+// what you see is always what you asked for last.
 
-let planning = false;
+let busy = false, queued = null, jobId = 0;
+function startJob(again) {
+  if (busy) { queued = again; return null; }
+  busy = true;
+  return ++jobId;
+}
+const stale = (id) => id !== jobId || queued !== null;
+function endJob() {
+  busy = false; setBusy(false);
+  const next = queued; queued = null;
+  next?.();
+}
+
 function setBusy(on, text) {
   planBtn.disabled = on;
   planBtn.classList.toggle("loading", on);
@@ -340,16 +224,18 @@ const routeError = (e) => new Error(e.message === "noroute" ? "Couldn't find a r
   : e.message === "busy" ? "The free cycle-route service is busy. Please try again in a minute."
   : e.message || "The route service isn't responding. Please try again in a moment.");
 
+// --- Planning ---------------------------------------------------------------------------
+
 async function plan() {
-  if (planning) return;
   if (prefs.ride === "ab" && !toIn.value.trim() && !toSel) { setCollapsed(false); toIn.focus(); return setStatus("Where are you heading? Type a destination or tap the map."); }
-  planning = true;
+  const id = startJob(plan);
+  if (id === null) return setStatus("Updating with your latest choices…");
   if (!fromSel) askCompass();
   setBusy(true, "Finding the way…");
   const bike = prefs.bike, opts = { avoidBusy: prefs.busy, offroad: prefs.offroad, cafe: prefs.cafe, flat: prefs.flat };
   try {
     const from = fromSel || (fromIn.value.trim() ? (fromSel = await resolvePlace(fromIn, null, fromAc)) : await getPosition());
-    if (!fromSel) { myPos = [from.lat, from.lon]; followMe(); }
+    if (!fromSel) { me.pos = [from.lat, from.lon]; followMe(); }
     store.set("lastCentre", [+from.lat.toFixed(3), +from.lon.toFixed(3)]);
     let option, others = [], to = null;
     if (prefs.ride === "ab") {
@@ -360,22 +246,26 @@ async function plan() {
     } else {
       setBusy(true, "Checking the wind…");
       const h = (await fetchWeather(from.lat, from.lon)).hourly, i = PAST_HOURS;
-      const loop = await planLoop(from, prefs.miles, bike, opts, { from: h.wind_direction_10m[i], speed: h.wind_speed_10m[i] }, (t) => setBusy(true, t)).catch((e) => { throw routeError(e); });
+      const wind = { from: h.wind_direction_10m[i] ?? 270, speed: h.wind_speed_10m[i] ?? 0 };   // gap in the forecast: plan as if a light westerly
+      const loop = await planLoop(from, prefs.miles, bike, opts, wind, (t) => setBusy(true, t)).catch((e) => { throw routeError(e); });
       option = loop.best; others = loop.others;
     }
+    if (stale(id)) return;
     // A → B bike routes fetch alternatives on demand (BRouter gives up to 3 more).
     const ctx = { ride: prefs.ride, bike, opts, from, to, target: prefs.miles, choices: [option, ...others],
       moreAlts: prefs.ride === "ab" && bike !== "motorbike" };
-    trip = await analyse(option, ctx, 0);
+    const planned = await analyse(option, ctx, 0);
+    if (stale(id)) return;
+    trip = planned; chosen = 0;
     remember(fromSel); remember(to);
-    shareState();
+    history.replaceState(null, "", shareHash(trip.ride, trip.bike, prefs, trip.to, fromSel));
     setStatus("");
     renderTrip(true, true);
+    console.info(`Safe2Ride: ${routeCalls} routing requests on this visit so far.`);
   } catch (e) {
-    setStatus(e.message && !/^(weather|route|search|elevation|cafes) ?\d*$/.test(e.message) ? e.message : "Something went wrong fetching the route or weather. Please try again.", true);
+    if (!stale(id)) setStatus(e.message && !/^(weather|route|search|elevation|cafes) ?\d*$/.test(e.message) ? e.message : "Something went wrong fetching the route or weather. Please try again.", true);
   } finally {
-    planning = false;
-    setBusy(false);
+    endJob();
   }
 }
 
@@ -397,7 +287,6 @@ async function analyse(option, ctx, k) {
     route.ele ? Promise.resolve(elevFromRoute(route)) : fetchElevation(route).catch(() => null)]);
   const p = await assessRoute(cps, wx, ctx.bike === "motorbike" ? "motorbike" : "bicycle", now);
   if (!p.options.length) throw new Error("That ride is longer than the forecast covers. Try a shorter route.");
-  chosen = 0;
   const cafes = option.cafeList?.length ? cafesOnRoute(route, option.cafeList, now) : [];
   if (option.cafe && !cafes.some((c) => c.name === option.cafe.name)) cafes.push(...cafesOnRoute(route, [option.cafe], now, 400));
   return { ...ctx, ...p, option, route, cps, elev, alt: k, cafes: cafes.sort((a, b) => a.dist - b.dist),
@@ -410,10 +299,10 @@ function elevFromRoute(route) {
   return z.length > 1 ? { d, z } : null;
 }
 
-// Switch to route k (loops: already planned; A → B: fetched from BRouter the first time).
+// Switch to route k (loops: already planned; A → B: fetched from BRouter the first time). Ignored while something else runs.
 async function chooseAlt(k) {
-  if (planning || !trip || k === trip.alt || k < 0) return;
-  planning = true;
+  if (busy || !trip || k === trip.alt || k < 0) return;
+  const id = startJob(null);
   try {
     const ctx = { ...trip };
     if (!ctx.choices[k]) {
@@ -421,29 +310,26 @@ async function chooseAlt(k) {
       setStatus("Finding another route…");
       const profile = cycleProfile(ctx.bike, ctx.opts.offroad, ctx.opts.avoidBusy);
       const route = await fetchCycleRoute([ctx.from, ctx.to], profile, k).catch((e) => { throw routeError(e); });
+      if (stale(id)) return;
       const same = ctx.choices.some((c) => Math.abs(c.route.distance - route.distance) < 50 && Math.abs(c.route.duration - route.duration) < 30);
       if (same || k >= 3) trip.moreAlts = false;
       if (same) { setStatus("That's the only sensible route we found."); renderTrip(false, false); return; }
       ctx.choices[k] = { route, waypoints: [ctx.from, ctx.to] };
       ctx.moreAlts = trip.moreAlts;
     }
-    trip = await analyse(ctx.choices[k], ctx, k);
+    const planned = await analyse(ctx.choices[k], ctx, k);
+    if (stale(id)) return;
+    trip = planned; chosen = 0;
     setStatus("");
     renderTrip(false, true);
-  } catch (e) { setStatus(e.message || "Couldn't load that route.", true); }
-  finally { planning = false; setBusy(false); }
+  } catch (e) { if (!stale(id)) setStatus(e.message || "Couldn't load that route.", true); }
+  finally { endJob(); }
 }
 
 planBtn.addEventListener("click", plan);
 
 // --- Sharing: the ride lives in the link (your own location is never put in it) ---------
 
-function shareState() {
-  const pt = (p) => [+p.lat.toFixed(4), +p.lon.toFixed(4), p.name];
-  const st = { r: trip.ride, b: trip.bike, o: [prefs.busy, prefs.offroad, prefs.cafe, prefs.flat].map(Number).join(""), L: prefs.miles,
-    ...(trip.to ? { t: pt(trip.to) } : {}), ...(fromSel ? { f: pt(fromSel) } : {}) };
-  history.replaceState(null, "", "#r=" + encodeURIComponent(JSON.stringify(st)));
-}
 async function shareRide() {
   const url = location.href, title = trip.ride === "loop" ? `Safe2Ride: ${prefs.miles}-mile loop from ${trip.from.name}` : `Safe2Ride: ${trip.from.name} → ${trip.to.name}`;
   try {
@@ -456,63 +342,24 @@ function saveAs(which) {
   const s = places(); s[which] = slim(trip.to); store.set("places", s);
   setStatus(`Saved ${trip.to.name} as ${which === "home" ? "Home" : "Work"}. It appears when you tap a search box.`);
 }
+// Opening a shared link: only the parts that check out are used (see share.js).
 (function openShared() {
-  const m = /#r=(.+)$/.exec(location.hash);
-  if (!m) return;
-  try {
-    const st = JSON.parse(decodeURIComponent(m[1]));
-    const place = ([lat, lon, name]) => ({ lat, lon, name, label: name });
-    if (st.t) { toSel = place(st.t); toIn.value = toSel.label; }
-    if (st.f) { fromSel = place(st.f); fromIn.value = fromSel.label; }
-    if (st.b) { prefs.bike = st.b; $("bike").value = st.b; }
-    if (st.o) [prefs.busy, prefs.offroad, prefs.cafe, prefs.flat] = st.o.split("").map((c) => c === "1");
-    ["busy", "offroad", "cafe", "flat"].forEach((k) => ($(`opt-${k}`).checked = prefs[k]));
-    if (st.L) { prefs.miles = st.L; $("loop-len").value = st.L; }
-    setRide(st.r === "loop" ? "loop" : "ab"); syncControls();
-    mapReady.then(plan);
-  } catch { /* a broken link just opens the normal page */ }
+  const st = parseShare(location.hash);
+  if (!st) return;
+  if (st.to) { toSel = st.to; toIn.value = toSel.label; }
+  if (st.from) { fromSel = st.from; fromIn.value = fromSel.label; }
+  if (st.bike) prefs.bike = st.bike;
+  if (st.opts) Object.assign(prefs, st.opts);
+  if (st.miles) prefs.miles = st.miles;
+  showPrefs();
+  setRide(st.ride); syncControls();
+  if (st.ride === "loop" || st.to) mapReady.then(plan);
 })();
 
-// --- Rendering a ride: one compact route card -------------------------------------------
+// --- Showing a ride ------------------------------------------------------------------------
 
 function renderTrip(first, fit) {
-  const o = trip.options[chosen], best = trip.options[trip.best], cycle = trip.bike !== "motorbike";
-  const backWord = trip.ride === "loop" ? "back" : "arrive";
-  const fromName = trip.from.name === "Your location" ? "your location" : trip.from.name;
-  const title = trip.ride === "loop" ? `${miles(trip.route.distance)}-mile loop from ${fromName}` : `${trip.from.name} → ${trip.to.name}`;
-  const n = trip.choices.filter(Boolean).length, known = !trip.moreAlts;
-  const hazard = (d) => (d.level ? HAZARD_WORD[d.reasons.find((r) => r.level === d.level)?.kind] || VERDICT[d.level].title : "Clear");
-  const anim = (i) => (first ? `reveal" style="--i:${i}` : "swap");
-  const sub = trip.alt === 0 ? (n > 1 || trip.moreAlts ? "Best match" : "") : trip.ride === "loop" ? `Heads ${compass(trip.option.heading ?? 0)} first` : "Alternative route";
-
-  body.innerHTML = `
-    <div class="card rdlg ${anim(0)}">
-      <div class="rhead">
-        <button type="button" class="arr" id="prev" aria-label="Previous route" ${trip.alt === 0 ? "disabled" : ""}>‹</button>
-        <div class="rt"><b>${n > 1 || trip.moreAlts ? `Route ${trip.alt + 1}${known ? ` of ${n}` : ""}` : "Your route"}</b><small>${esc(sub)}</small></div>
-        <button type="button" class="arr" id="next" aria-label="Next route" ${trip.alt + 1 < n || trip.moreAlts ? "" : "disabled"}>›</button>
-      </div>
-      <p class="desc">${describe(o, title, backWord)}</p>
-      ${trip.stats ? surfaceBar(trip.stats) : ""}
-      <div class="links"><button type="button" class="linkbtn" id="share">Share</button>
-        ${trip.to ? `<button type="button" class="linkbtn" data-save="home">Save as Home</button><button type="button" class="linkbtn" data-save="work">Save as Work</button>` : ""}</div>
-    </div>
-    <div class="card ${anim(1)}"><h2 class="ch">When to leave${trip.best !== chosen ? ` · best ${trip.best === 0 ? "now" : clock(best.dep)}` : ""}</h2>
-      <div class="deps" role="group" aria-label="Departure times">${trip.options.map((d, i) => {
-        const mid = d.pts[Math.floor(d.pts.length / 2)];
-        return `<button class="dep" aria-pressed="${i === chosen}" data-i="${i}" title="${VERDICT[d.level].title}: leave ${clock(d.dep)}">
-          ${i === trip.best ? '<span class="star">Best</span>' : ""}<span class="t">${i === 0 ? "Now" : clock(d.dep)}</span>
-          ${svg(wxBits(mid.h, mid.at).icon)}${lvPill(d.level)}<span class="hz">${hazard(d)}</span></button>`;
-      }).join("")}</div></div>
-    <details class="card more ${anim(2)}"><summary>More details</summary>
-      ${trip.stats?.issues.length ? `<h3>Surfaces to watch</h3>${issuesHtml(trip.stats)}` : ""}
-      ${trip.elev ? `<h3>Hills</h3>${profileHtml(o)}` : ""}
-      <h3>Weather risk <a href="#how">How we score</a></h3>${scoreTiles(o.scores)}
-      <h3>Why</h3>${reasonList(o.reasons, "No weather hazards found along the route.")}
-      <h3>Along the way</h3>${pointsHtml(o)}
-      ${cycle && trip.opts.cafe && cafeNote() ? `<p class="note">${cafeNote()}</p>` : ""}
-    </details>`;
-
+  body.innerHTML = tripHtml(trip, chosen, first);
   $("intro").hidden = true;
   $("prev").addEventListener("click", () => chooseAlt(trip.alt - 1));
   $("next").addEventListener("click", () => chooseAlt(trip.alt + 1));
@@ -520,141 +367,18 @@ function renderTrip(first, fit) {
   $("share").addEventListener("click", shareRide);
   body.querySelectorAll("[data-save]").forEach((b) => b.addEventListener("click", () => saveAs(b.dataset.save)));
   countUp(body);
-  if (first) { setCollapsed(true, title); setSheet("half"); }
-  mapReady.then(() => drawTrip(o, fit));
-}
-
-// The route in one paragraph: verdict, distance and time, weather, roads, hills, cafés.
-function describe(o, title, backWord) {
-  const st = trip.stats, when = chosen === 0 ? "now" : `at ${clock(o.dep)}`;
-  const parts = [`<span class="vpill l${o.level}">${["✓", "!", "×"][o.level]} ${VERDICT[o.level].title}</span>`,
-    `${esc(title)}: ${miles(trip.route.distance)} mi, about ${duration(trip.route.duration)}, ${backWord} ${clock(o.arrive)} if you leave ${when}.`,
-    esc(o.summary)];
-  if (st) {
-    const main = ["quiet", "path"].filter((k) => st.pct[k] >= 5).map((k) => `${{ quiet: "quiet roads", path: "cycle paths" }[k]} (${Math.round(st.pct[k])}%)`);
-    const extra = [];
-    if (st.metres.busy >= 100) extra.push(`${miles(st.metres.busy)} mi on busy roads`);
-    const rough = st.metres.g1 + st.metres.g2 + st.metres.g3;
-    if (rough >= 100) extra.push(`${miles(rough)} mi of unpaved track`);
-    const bad = st.issues.filter((x) => x.level === 2).reduce((s, x) => s + x.len, 0);
-    parts.push(`${main.length ? `Mostly ${main.join(" and ")}` : "Mixed roads"}${extra.length ? `, with ${extra.join(" and ")}` : ""}.${bad ? ` <b>${miles(bad)} mi isn't suitable for a ${BIKE_NAME[trip.bike]}.</b>` : ""}`);
-    const p0 = o.pts[0], rain6 = p0.h.precipitation.slice(Math.max(0, p0.at - PAST_HOURS), p0.at + 1).reduce((a, b) => a + b, 0);
-    if (rough + st.metres.unknown > 800 && rain6 >= 1) parts.push("Unpaved stretches will be muddy after the recent rain.");
-  }
-  if (trip.route.climb) parts.push(`${Math.round(trip.route.climb)} m of climbing.`);
-  if (trip.bike !== "motorbike" && trip.opts.cafe) {
-    const c = trip.cafes.length;
-    parts.push(c ? `${c} café${c > 1 ? "s" : ""} on the way: tap ☕ on the map.` : trip.option.cafeError ? "Café search isn't responding right now." : "No cafés right on the route.");
-  }
-  return parts.join(" ");
-}
-
-function surfaceBar(st) {
-  const shown = SURFACES.filter((x) => st.metres[x.id] >= 50);
-  return `<div class="sbar" role="img" aria-label="${shown.map((x) => `${x.name} ${Math.round(st.pct[x.id])}%`).join(", ")}">${shown.map((x) => `<i style="width:${st.pct[x.id]}%;background:${x.colour}"></i>`).join("")}</div>
-    <div class="skey">${shown.map((x) => `<span><i class="sw" style="background:${x.colour}"></i>${x.name} ${st.pct[x.id] < 1 ? "<1" : Math.round(st.pct[x.id])}%</span>`).join("")}</div>`;
-}
-
-function issuesHtml(st) {
-  const where = (d) => (d < 400 ? "near the start" : trip.route.distance - d < 400 ? "near the end" : `around mile ${miles(d)}`);
-  const verb = ["", "take care on a", "not suitable for a"];
-  return `<ul class="issues">${st.issues.slice(0, 5).map((x) => `<li>${lvPill(x.level)}<span>${miles(x.len)} mi of ${ISSUE_NAME[x.cls]} ${where(x.start)}: ${verb[x.level]} ${BIKE_NAME[trip.bike]}.</span></li>`).join("")}</ul>`;
-}
-
-function cafeNote() {
-  if (trip.option.cafeRejected) return `The nearest café to halfway, ${esc(trip.option.cafeRejected)}, is only reachable on surfaces that don't suit a ${BIKE_NAME[trip.bike]}, so we've left it out.`;
-  return trip.cafes.length ? "Cafés come from OpenStreetMap. Where several are close together we show the best local one." : "";
-}
-
-// Café details, shown when you tap or hover over its ☕ on the map.
-function cafePopup(c) {
-  const o = trip.options[chosen], eta = o.dep + c.t, open = openAt(c.hours, new Date(eta * 1000));
-  return `<b>${esc(c.name)}</b><br>${c.chain ? "Chain" : "Independent"}${trip.option.cafe?.name === c.name ? " · your café stop" : ""}<br>
-    Mile ${miles(c.dist)} · about ${clock(eta)}<br>
-    ${open === true ? '<span class="open-yes">Open when you get there</span>' : open === false ? '<span class="closed">Closed when you get there</span>' : '<span class="open-unknown">Opening hours not listed</span>'}${c.hours ? `<br><small>${esc(c.hours)}</small>` : ""}`;
-}
-
-function pointsHtml(o) {
-  return `<ul class="cps">${o.pts.map((p, k) => {
-    const g = o.segs[Math.min(k, o.segs.length - 1)], h = p.h, i = p.at, b = wxBits(h, i);
-    const wind = g.head >= 6 ? "headwind" : g.head <= -6 ? "tailwind" : h.wind_speed_10m[i] >= 8 ? "crosswind" : "light wind";
-    const label = k === 0 ? "Start" : k === o.pts.length - 1 ? (trip.ride === "loop" ? "Back home" : "Arrive") : `Mile ${miles(p.dist)}`;
-    return `<li>${lvPill(p.level)}<span><b>${clock(p.eta)}</b></span>${svg(b.icon)}
-      <span><b>${label}</b><span class="wx"><span>${b.temp}°</span><span>${b.fall}</span><span>${b.arrow}<span class="w">&nbsp;gusts ${Math.round(h.wind_gusts_10m[i])}</span></span><span class="w">${wind}</span></span></span></li>`;
-  }).join("")}</ul>`;
-}
-
-// Hills: height along the route.
-function profileHtml(o) {
-  const e = trip.elev;
-  if (!e || e.z.length < 2) return "";
-  const W = 600, H = 80, total = trip.route.distance;
-  const lo = Math.min(...e.z), hi = Math.max(...e.z), span = Math.max(30, hi - lo);
-  const x = (d) => (d / total * W).toFixed(1), y = (z) => (H - 6 - (z - lo) / span * (H - 14)).toFixed(1);
-  const pts = e.d.map((d, i) => `${x(d)},${y(e.z[i])}`);
-  const st = climbStats(e.z);
-  return `<div class="profile"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Hills: ${st.up} metres of climbing, ${st.min} to ${st.max} metres high.">
-      <polygon class="area" points="0,${H} ${pts.join(" ")} ${W},${H}"/><polyline points="${pts.join(" ")}" fill="none" stroke="var(--moss)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
-    <div class="stats-line"><span>↗ ${st.up} m climbing</span><span>↘ ${st.down} m descending</span><span>${st.min}–${st.max} m high</span>${trip.bike !== "motorbike" && st.up / (total / MILE) > 25 ? "<span>Hilly: allow extra time</span>" : ""}</div></div>`;
-}
-
-// --- Drawing a ride on the map: coloured by path type, labels stay on top ---------------------
-
-function drawTrip(o, fit) {
-  clearMap();
-  const { coords } = trip.route;
-  const line = (pts) => ({ type: "LineString", coordinates: pts.map(([la, lo]) => [lo, la]) });
-
-  // Other routes: faint dashed lines you can tap to switch.
-  map.getSource("alts").setData({ type: "FeatureCollection", features: trip.choices.map((c, k) => (k === trip.alt || !c ? null
-    : { type: "Feature", properties: { k }, geometry: line(c.route.coords) })).filter(Boolean) });
-
-  // The route, one feature per run of the same path type (motorbike routes have no grading: one colour).
-  const feats = [];
-  if (trip.route.cls) {
-    let start = 0;
-    for (let i = 1; i <= trip.route.cls.length; i++) {
-      if (i < trip.route.cls.length && trip.route.cls[i] === trip.route.cls[start]) continue;
-      const c = trip.route.cls[start];
-      feats.push({ type: "Feature", properties: { cls: c, colour: SURFACE[c].colour, dash: DASH[c] ? c : "none" }, geometry: line(coords.slice(start, i + 1)) });
-      start = i;
-    }
-  } else feats.push({ type: "Feature", properties: { cls: "quiet", colour: "#2d6a4f", dash: "none" }, geometry: line(coords) });
-  map.getSource("route").setData({ type: "FeatureCollection", features: feats });
-  map.getSource("route-dir").setData({ type: "Feature", properties: {}, geometry: line(coords) });
-
-  addMarker(div("pin-start"), coords[0][0], coords[0][1], `<b>Start</b><br>${esc(trip.from.name)}`);
-  if (trip.ride === "ab") addMarker(div("pin-end"), coords.at(-1)[0], coords.at(-1)[1], `<b>Finish</b><br>${esc(trip.to.name)}`);
-  trip.cafes.forEach((c) => addMarker(div(`pin-cafe${c.chain ? " chain" : ""}${trip.option.cafe?.name === c.name ? " stop" : ""}`, "☕"), c.lat, c.lon, () => cafePopup(c), "center", 18));
-
-  // Weather tags (thinned so they never overlap).
-  chips = o.pts.map((p, k) => {
-    const b = wxBits(p.h, p.at), h = p.h, i = p.at;
-    const el = div(`wchip b${p.level}`, `${p.level ? `<b class="tg">${["", "!", "×"][p.level]}</b>` : ""}${svg(b.icon)}<span>${b.temp}°</span>${b.arrow}`);
-    const tip = `<b>${k === 0 ? "Start" : k === o.pts.length - 1 ? "End" : "Mile " + miles(p.dist)} · ${clock(p.eta)} · ${VERDICT[p.level].title}</b><br>${WMO[h.weather_code[i]] ?? ""}, ${b.temp}° · ${b.fall}<br>Wind from the ${compass(h.wind_direction_10m[i])}, ${Math.round(h.wind_speed_10m[i])} mph, gusts ${Math.round(h.wind_gusts_10m[i])}`;
-    const marker = new maplibregl.Marker({ element: el, anchor: "bottom", offset: [0, -8] }).setLngLat([p.lon, p.lat]);
-    el.addEventListener("click", (e) => { e.stopPropagation(); hoverPop?.remove(); hoverPop = popup(tip, [p.lon, p.lat], 34); });
-    return { marker, lngLat: [p.lon, p.lat], level: p.level, end: k === 0 || k === o.pts.length - 1 ? 1 : 0 };
-  });
-  if (fit) { fitTo(coords); map.once("moveend", layoutChips); } else layoutChips();
-}
-
-// Weather tags, thinned so they never overlap. Hazards and the ends win space first.
-function layoutChips() {
-  const placed = [];
-  const order = chips.map((c, k) => ({ c, k })).sort((a, b) => b.c.level - a.c.level || b.c.end - a.c.end || a.k - b.k);
-  for (const { c } of order) {
-    const pt = map.project(c.lngLat);
-    const clash = placed.some((q) => Math.abs(q.x - pt.x) < 104 && Math.abs(q.y - pt.y) < 34);
-    if (clash) c.marker.remove(); else { placed.push(pt); c.marker.addTo(map); }
-  }
+  if (first) { setCollapsed(true, rideTitle(trip)); setSheet("half"); }
+  const o = trip.options[chosen];
+  mapReady.then(() => drawTrip(trip, o, fit, (c) => cafePopup(trip, chosen, c)));
 }
 
 // --- "Safe to ride here?" --------------------------------------------------------------
 
-$("here-btn").addEventListener("click", async () => {
+async function checkHere() {
   const b = $("here-btn");
   if (b.classList.contains("loading")) return;
+  const id = startJob(checkHere);
+  if (id === null) return;
   b.classList.add("loading"); b.querySelector("span").textContent = "Checking…";
   setStatus("Finding you…");
   try {
@@ -665,9 +389,10 @@ $("here-btn").addEventListener("click", async () => {
     setStatus("Reading the sky…");
     const [data, place] = await Promise.all([fetchWeather(pos.lat, pos.lon), fetchPlace(pos.lat, pos.lon)]);
     const a = await assessHere(data.hourly, lim());
+    if (stale(id)) return;
     trip = null;
     clearMap();
-    meNote = place ? `<b>You're near ${esc(place)}</b>` : "";
+    me.note = place ? `<b>You're near ${esc(place)}</b>` : "";
     $("intro").hidden = true;
     body.innerHTML = hereHtml(data, place, lim(), a);
     countUp(body);
@@ -676,11 +401,14 @@ $("here-btn").addEventListener("click", async () => {
     setSheet("half");
     fitTo([[pos.lat - 0.02, pos.lon - 0.03], [pos.lat + 0.02, pos.lon + 0.03]], 14);
   } catch (e) {
+    if (stale(id)) return;
     setStatus(e.message && !/^weather/.test(e.message) ? e.message : "Couldn't fetch the weather right now. Please try again in a moment.", true);
     setSheet("half");
   } finally {
     b.classList.remove("loading"); b.querySelector("span").textContent = "Safe to ride here?";
+    endJob();
   }
-});
+}
+$("here-btn").addEventListener("click", checkHere);
 
 renderHow();

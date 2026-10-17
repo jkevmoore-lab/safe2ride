@@ -1,7 +1,7 @@
 #!/bin/sh
-# Bump the ?v= on script tags whenever a .js file changes, so browsers never mix old and new scripts.
+# Bump every ?v= in index.html's import map whenever a .js file changes, so browsers never mix old and new scripts.
 if git diff --cached --name-only | grep -qE '^[a-z-]+\.js$'; then
   V=$(date +%Y%m%d%H%M)
-  sed -i '' -E "s#<script src=\"([a-z-]+)\.js\?v=[0-9]+\"></script>#<script src=\"\1.js?v=$V\"></script>#g" index.html
+  sed -i '' -E "s#(\.js\?v=)[0-9]+#\1$V#g" index.html
   git add index.html
 fi

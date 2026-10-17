@@ -1,9 +1,14 @@
-// Run with: node tests/run.mjs        (add --live to also hit the real APIs)
+// Unit tests for the parts of the site with no page to draw on. Run with: npm run test:unit   (npm run test:live also hits the real APIs)
 import fs from "fs";
 import assert from "assert/strict";
+import * as logicJs from "../logic.js";
+import * as routeJs from "../route.js";
+import * as loopJs from "../loop.js";
+import * as apiJs from "../api.js";
+import * as shareJs from "../share.js";
+import * as appJs from "../app.js";
 
-const src = ["logic.js", "route.js", "loop.js", "api.js"].map((f) => fs.readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
-const S = new Function(src + "; return { findSpurs, isChain, cafesOnRoute, openAt, classifyWay, surfaceStats, loopWaypoints, overlapPct, insertStop, haversine, destPoint, fetchCycleRoute, cycleProfile, planLoop, addCafeStop, climbStats, fetchElevation, pointAt, precipType, compass, bestWindow, makeCheckpoints, bearing, fetchRoute, fetchRouteWeather, forecastHoursFor, searchPlaces, PAST_HOURS, MILE, bestWindow, assessRoute };")();
+const S = { ...logicJs, ...routeJs, ...loopJs, ...apiJs, ...shareJs, ...appJs };
 
 // Browsers send a User-Agent automatically; Node doesn't, and some map services require one.
 const realFetch = globalThis.fetch;
@@ -56,26 +61,79 @@ test("checkpoints span the route", () => {
 
 // The API call for a route (api.js), with the Worker faked: what's sent, and how the reply is joined back up.
 {
-  const fake = { best: 0, options: [{ dep: t0, arrive: t0 + 2400, level: 1, reasons: [], scores: {}, summary: "",
-    pts: cps.map((c) => ({ at: 6, eta: t0 + c.t, level: 1 })), segs: cps.slice(1).map(() => ({ head: 3 })) }] };
+  // Points and stretches come back shuffled: they must be joined by k, not by position.
+  const fake = { v: 2, best: 0, options: [{ dep: t0, arrive: t0 + 2400, level: 1, reasons: [], scores: {}, summary: "",
+    pts: cps.map((c, k) => ({ k, at: 6, eta: t0 + c.t, level: k === 2 ? 2 : 1 })).reverse(),
+    segs: cps.slice(1).map((_, k) => ({ k, head: k })).reverse() }] };
   const saved = globalThis.fetch;
   let sent;
-  globalThis.fetch = async (url, init) => { sent = { url, ...JSON.parse(init.body) }; return new Response(JSON.stringify(fake)); };
+  const reply = (status, body) => async (url, init) => { sent = { url, ...JSON.parse(init.body) }; return new Response(JSON.stringify(body), { status }); };
+  globalThis.fetch = reply(200, fake);
   const wx = cps.map((_, k) => ({ time: [k] }));
   const plan = await S.assessRoute(cps, wx, "bicycle", t0);
+  globalThis.fetch = reply(409, { error: "x", code: "version" });
+  const old = await S.assessRoute(cps, wx, "bicycle", t0).catch((e) => e.message);
+  globalThis.fetch = reply(200, { ...fake, options: [{ ...fake.options[0], pts: fake.options[0].pts.slice(1) }] });
+  const short = await S.assessRoute(cps, wx, "bicycle", t0).catch((e) => e.message);
   globalThis.fetch = saved;
-  test("route check sends the weather and checkpoints, and joins the reply back up", () => {
+  test("route check sends the version, weather and checkpoints, and joins the reply back up by index", () => {
     assert.match(sent.url, /\/assess\/route$/);
+    assert.equal(sent.v, S.API_VERSION);
     assert.deepEqual(Object.keys(sent.cps[0]), ["lat", "lon", "t", "dist"]);
     assert.equal(typeof sent.tz, "string");
     const o = plan.options[0];
     assert.equal(o.pts[2].h, wx[2]);
     assert.equal(o.pts[2].lat, cps[2].lat);
-    assert.equal(o.pts[2].level, 1);
+    assert.equal(o.pts[2].level, 2);
+    assert.deepEqual(o.segs.map((g) => g.head), [0, 1, 2, 3]);
     assert.equal(o.segs[1].from, o.pts[1]);
     assert.equal(o.segs[1].to, o.pts[2]);
   });
+  test("an out-of-date page is asked to refresh; a reply missing a point is an error", () => {
+    assert.match(old, /refresh the page/);
+    assert.match(short, /had a problem/);
+  });
 }
+
+console.log("Shared contract with the API");
+{
+  const contract = JSON.parse(fs.readFileSync(new URL("../contract/v2.json", import.meta.url), "utf8"));
+  test("the site sends the version, weather and hours the contract says", () => {
+    assert.equal(S.API_VERSION, contract.v);
+    assert.deepEqual(S.WEATHER_VARS.split(","), contract.weather.vars);
+    assert.equal(S.PAST_HOURS, contract.weather.pastHours);
+    assert.equal(S.FORECAST_HOURS, contract.weather.forecastHours);
+  });
+  // Only when the API repo is checked out next to this one (not in CI): the two copies must be identical.
+  const theirs = new URL("../../safe2ride-api/contract/v2.json", import.meta.url);
+  if (fs.existsSync(theirs)) test("contract/v2.json is identical in both repos", () => assert.equal(fs.readFileSync(theirs, "utf8"), fs.readFileSync(new URL("../contract/v2.json", import.meta.url), "utf8")));
+}
+
+console.log("Share links");
+test("a good link round-trips", () => {
+  const prefs = { busy: true, offroad: false, cafe: true, flat: false, miles: 30 };
+  const hash = S.shareHash("ab", "gravel", prefs, { lat: 51.81234, lon: -1.63, name: "Burford" }, null);
+  assert.deepEqual(S.parseShare(hash), { ride: "ab", bike: "gravel", opts: { busy: true, offroad: false, cafe: true, flat: false }, miles: 30,
+    to: { lat: 51.8123, lon: -1.63, name: "Burford", label: "Burford" } });
+});
+test("bad parts of a link are dropped, not trusted", () => {
+  const link = (st) => S.parseShare("#r=" + encodeURIComponent(JSON.stringify(st)));
+  assert.deepEqual(link({ r: "loop", b: "unicycle", o: "1x01", L: 1000, t: ["51", -1, "x"], f: [95, 0, "Nowhere"] }), { ride: "loop", miles: 100 });
+  assert.equal(link({ L: 2 }).miles, 5);
+  assert.equal(link({ L: 23 }).miles, 25);
+  assert.equal(link({ t: [51, -1, "<b>" + "x".repeat(200)] }).to.name.length, 80);
+  assert.equal(link({ t: [51, -1] }).to.name, "Shared place");
+  assert.equal(S.parseShare("#r=%7Bnot json"), null);
+  assert.equal(S.parseShare("#how"), null);
+});
+
+console.log("Gaps in the forecast");
+test("missing values show as a dash, never as 0", () => {
+  assert.equal(S.num(null), "–"); assert.equal(S.num(3.46, 1), "3.5"); assert.equal(S.num(0), "0");
+  const h = { weather_code: [null], precipitation: [null], snowfall: [null], wind_speed_10m: [null], wind_direction_10m: [null], temperature_2m: [null], is_day: [1] };
+  const b = S.wxBits(h, 0);
+  assert.equal(b.temp, "–"); assert.equal(b.fall, "rain unknown"); assert.match(b.arrow, /Wind from the \?, – mph/);
+});
 console.log("Opening hours");
 const at = (d, hm) => new Date(`2026-10-${d}T${hm}:00`);   // 12 Oct 2026 is a Monday
 test("simple daily hours", () => {

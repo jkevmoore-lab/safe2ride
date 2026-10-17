@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" integrity="sha384-gNYNsUmuZqDYiT3gbirWTV5K7rt71RoveS/yXAaU09d4ZUmeDVTD3XoqB6uJAIFR" crossorigin="anonymous">
 <style>
   :root {
     --sand: #f4f2ea; --card: #ffffff; --ink: #14251e; --muted: #5f6f67; --line: #e4e2d8;
@@ -390,12 +390,22 @@
 
 <button type="button" class="fab" id="here-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span>Safe to ride here?</span></button>
 
-<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js"></script>
-<script src="logic.js?v=202610170741"></script>
-<script src="api.js?v=202610170741"></script>
-<script src="route.js?v=202610170741"></script>
-<script src="loop.js?v=202610170741"></script>
-<script src="app.js?v=202610170741"></script>
-<script src="ui.js?v=202610170741"></script>
+<script src="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js" integrity="sha384-81ppUWZZO+pveTPk4qU9cZuScEFULHfuOMHVJHFZ7xVBlWQTG1zsPrVIMGAl1WMb" crossorigin="anonymous"></script>
+<!-- Our scripts are modules; this map gives each one a version so browsers never mix cached and new files.
+     The pre-commit hook (.githooks/pre-commit) bumps every ?v= here when a .js file changes. -->
+<script type="importmap">
+{ "imports": {
+  "./logic.js": "./logic.js?v=202610170851",
+  "./route.js": "./route.js?v=202610170851",
+  "./loop.js": "./loop.js?v=202610170851",
+  "./api.js": "./api.js?v=202610170851",
+  "./share.js": "./share.js?v=202610170851",
+  "./app.js": "./app.js?v=202610170851",
+  "./map.js": "./map.js?v=202610170851",
+  "./render.js": "./render.js?v=202610170851",
+  "./ui.js": "./ui.js?v=202610170851"
+} }
+</script>
+<script type="module">import "./ui.js";</script>
 </body>
 </html>

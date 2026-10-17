@@ -1,5 +1,8 @@
 // Safe2Ride shared page helpers: icons, cards, charts, the "Safe to ride here?" check and "How we decide".
 
+import { PAST_HOURS, WMO, bestWindow, precipType, compass } from "./logic.js";
+import { SURFACES, SURFACE_FIT } from "./route.js";
+
 const ICONS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
@@ -22,7 +25,7 @@ const ICONS = {
 };
 const svg = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 const REASON_ICON = { storm: "storm", snow: "snow", ice: "ice", wind: "wind", rain: "rain", wet: "drop", fog: "fog", heat: "heat", dark: "moon",
-  soak: "rain", headwind: "wind", tailwind: "wind", crosswind: "wind" };
+  soak: "rain", headwind: "wind", tailwind: "wind", crosswind: "wind", data: "eye" };
 const VERDICT = [
   { cls: "go", title: "Good to go", mark: "M24 37l8 8 16-17" },
   { cls: "care", title: "Ride with care", mark: "M36 22v16M36 48v.5" },
@@ -49,11 +52,8 @@ const store = {
 
 function setStatus(t, error = false) { const el = $("status"); el.textContent = t; el.classList.toggle("error", error && !!t); }
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
-const LINE_DASH = [null, "10 8", "1 9"];   // weather: take care = dashed, not advised = dotted
-function levelColours() {
-  const css = getComputedStyle(document.documentElement);
-  return ["--go", "--care", "--stop"].map((v) => css.getPropertyValue(v).trim());
-}
+// A forecast value for display: rounded, or to `d` decimals. A gap in the forecast shows as "–", never as 0.
+function num(x, d = 0) { return Number.isFinite(x) ? (d ? x.toFixed(d) : String(Math.round(x))) : "–"; }
 
 function getPosition() {
   return new Promise((resolve, reject) => {
@@ -104,11 +104,6 @@ function rainChart(h, now) {
 function lvPill(level, i) {
   return `<span class="lvp l${level}"${i != null ? ` style="--i:${i}"` : ""} role="img" aria-label="${VERDICT[level].title}">${["✓", "!", "×"][level]}</span>`;
 }
-
-// Verdict level as colour plus a symbol, so it reads without colour vision.
-function lvPill(level, i) {
-  return `<span class="lvp l${level}"${i != null ? ` style="--i:${i}"` : ""} role="img" aria-label="${VERDICT[level].title}">${["✓", "!", "×"][level]}</span>`;
-}
 function legend() {
   return `<div class="legend">${VERDICT.map((v, l) => `<span>${lvPill(l)}${l === 1 ? "Take care" : v.title}</span>`).join("")}</div>`;
 }
@@ -118,10 +113,11 @@ function wxBits(h, i) {
   const kind = precipType(h, i), code = h.weather_code[i];
   const icon = kind === "freezing" ? "sleet" : kind || (code >= 51 && code < 95 ? "cloud" : weatherIcon(code, h.is_day[i]));
   const mm = h.precipitation[i];
-  const fall = { rain: `${mm.toFixed(1)} mm rain`, sleet: `sleet ${mm.toFixed(1)} mm`, snow: `snow ${h.snowfall[i].toFixed(1)} cm`, freezing: "freezing rain" }[kind] || "dry";
+  const fall = { rain: `${num(mm, 1)} mm rain`, sleet: `sleet ${num(mm, 1)} mm`, snow: `snow ${num(h.snowfall[i], 1)} cm`, freezing: "freezing rain" }[kind]
+    || (Number.isFinite(mm) ? "dry" : "rain unknown");
   const ws = h.wind_speed_10m[i], dir = h.wind_direction_10m[i];
-  const arrow = `<span class="wa w${ws < 10 ? 0 : ws < 20 ? 1 : ws < 30 ? 2 : 3}" style="--r:${(dir + 180) % 360}deg" title="Wind from the ${compass(dir)}, ${Math.round(ws)} mph">${svg("arrow")}<i>${Math.round(ws)}</i></span>`;
-  return { icon, fall, arrow, temp: Math.round(h.temperature_2m[i]) };
+  const arrow = `<span class="wa w${!(ws >= 10) ? 0 : ws < 20 ? 1 : ws < 30 ? 2 : 3}" style="--r:${((dir ?? 0) + 180) % 360}deg" title="Wind from the ${compass(dir)}, ${num(ws)} mph">${svg("arrow")}<i>${num(ws)}</i></span>`;
+  return { icon, fall, arrow, temp: num(h.temperature_2m[i]) };
 }
 
 function badge(level) {
@@ -135,7 +131,7 @@ function scoreTiles(sc) {
       <span class="head">${svg(icon)}${name} risk</span>${sub ? `<span class="sub">${sub}</span>` : ""}
       <span class="num"><span class="count" data-to="${r.score}">0</span><small> /10</small></span>
       <span class="gauge"><i class="s${t}" style="width:${Math.max(4, r.score * 10)}%"></i></span>
-      <span class="lbl s${t}">${r.label}</span><span class="det">${esc(r.detail)}</span>
+      <span class="lbl s${t}">${esc(r.label)}</span><span class="det">${esc(r.detail)}</span>
     </div>`; }).join("")}</div>`;
 }
 
@@ -191,11 +187,11 @@ function hereHtml(data, place, mode, a) {
     + card("", `<h2 class="ch">Risk scores · next 3 hours <a href="#how">How we score</a></h2>${scoreTiles(a.scores)}`)
     + card("", `<h2 class="ch">Why</h2>${reasonList(reasons, "No weather hazards found for the next 3 hours.")}`)
     + card("quiet", `<h2 class="ch">Right now · ${WMO[h.weather_code[now]] ?? ""}</h2><div class="stats">
-        <div class="stat">${svg("temp")}<small>Air · feels like</small><strong>${Math.round(h.temperature_2m[now])}°</strong> <em>${Math.round(h.apparent_temperature[now])}°</em></div>
-        <div class="stat">${svg("ice")}<small>Road surface</small><strong>${Math.round(h.soil_temperature_0cm[now])}°C</strong></div>
-        <div class="stat">${svg("wind")}<small>Wind · gusts</small><strong>${Math.round(h.wind_speed_10m[now])}</strong> <em>${Math.round(h.wind_gusts_10m[now])} mph from the ${compass(h.wind_direction_10m[now])}</em></div>
-        <div class="stat">${svg("drop")}<small>Rain now · last ${PAST_HOURS}h</small><strong>${h.precipitation[now].toFixed(1)}</strong> <em>${h.precipitation.slice(0, now).reduce((a, b) => a + b, 0).toFixed(1)} mm</em></div>
-        <div class="stat">${svg("eye")}<small>Visibility</small><strong>${h.visibility[now] >= 10000 ? "10+" : (h.visibility[now] / 1000).toFixed(1)}</strong> <em>km</em></div>
+        <div class="stat">${svg("temp")}<small>Air · feels like</small><strong>${num(h.temperature_2m[now])}°</strong> <em>${num(h.apparent_temperature[now])}°</em></div>
+        <div class="stat">${svg("ice")}<small>Road surface</small><strong>${num(h.soil_temperature_0cm[now])}°C</strong></div>
+        <div class="stat">${svg("wind")}<small>Wind · gusts</small><strong>${num(h.wind_speed_10m[now])}</strong> <em>${num(h.wind_gusts_10m[now])} mph from the ${compass(h.wind_direction_10m[now])}</em></div>
+        <div class="stat">${svg("drop")}<small>Rain now · last ${PAST_HOURS}h</small><strong>${num(h.precipitation[now], 1)}</strong> <em>${h.precipitation.slice(0, now).reduce((a, b) => a + (b ?? 0), 0).toFixed(1)} mm</em></div>
+        <div class="stat">${svg("eye")}<small>Visibility</small><strong>${h.visibility[now] >= 10000 ? "10+" : num(h.visibility[now] / 1000, 1)}</strong> <em>km</em></div>
       </div>`);
 }
 
@@ -223,5 +219,8 @@ function renderHow() {
       <li><b>Wind</b>: your strongest gust against your vehicle's limit.</li></ul>
     <h3>Loops and café stops</h3>
     <p>We try loops in up to six directions, heading out into the wind so it's behind you on the way home, and pick the one that best matches your distance with the fewest busy roads, unsuitable surfaces and retraced roads (and the least climbing if you prefer flat). Cafés come from OpenStreetMap; we pick one near halfway, open when you'd arrive if its hours are known.</p>
+    <p>When part of the forecast is missing we say so, and never call it "Good to go".</p>
     <p>Safe2Ride is guidance only: it can't see the road in front of you.</p>`;
 }
+
+export { svg, VERDICT, weatherIcon, $, store, setStatus, esc, num, getPosition, lvPill, wxBits, scoreTiles, reasonList, countUp, hereHtml, renderHow };

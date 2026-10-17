@@ -1,0 +1,36 @@
+{
+  "about": "What the Safe2Ride site sends the Safe2Ride API and what comes back. Keep this file identical in both repos (the site's tests compare them when both are checked out side by side). Bump v for any change an older site couldn't handle.",
+  "v": 2,
+  "weather": {
+    "about": "The site fetches the weather (Open-Meteo hourly, wind in mph) and sends it as-is. Values may be null; the API never reads a gap as safe.",
+    "vars": ["temperature_2m", "apparent_temperature", "dew_point_2m", "precipitation", "precipitation_probability", "snowfall", "weather_code", "visibility", "wind_speed_10m", "wind_gusts_10m", "wind_direction_10m", "soil_temperature_0cm", "is_day"],
+    "pastHours": 6,
+    "forecastHours": 13
+  },
+  "endpoints": {
+    "POST /assess/here": {
+      "request": ["v", "mode", "hourly"],
+      "response": ["v", "time", "level", "verdict", "summary", "reasons", "scores", "levels"]
+    },
+    "POST /assess/route": {
+      "request": ["v", "mode", "now", "tz", "cps", "wx"],
+      "checkpoint": ["lat", "lon", "t", "dist"],
+      "response": ["v", "best", "options"],
+      "option": ["dep", "arrive", "level", "cost", "reasons", "scores", "summary", "headD", "tailD", "pts", "segs"],
+      "point": ["k", "at", "eta", "level"],
+      "segment": ["k", "dist", "hours", "level", "head", "crossGust", "rain"]
+    },
+    "POST /describe/route": {
+      "status": "planned: not built yet. Runs only when the rider taps Description.",
+      "request": ["v", "mode", "now", "tz", "cps", "wx", "dep", "route"],
+      "route": ["kind", "bike", "distanceM", "durationS", "climbM", "start", "end", "places", "roads", "surfaces", "issues", "hills", "cafes"],
+      "response": ["v", "text"]
+    }
+  },
+  "errors": {
+    "400": "bad request: { error }",
+    "409": "version mismatch: { error, code: \"version\" }; the site asks the rider to refresh",
+    "413": "request too large: { error }",
+    "429": "rate limited: { error }"
+  }
+}

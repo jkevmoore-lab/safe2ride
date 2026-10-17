@@ -1,5 +1,7 @@
 // Safe2Ride loops and café stops. No DOM access here so it can be tested on its own.
 
+import { MILE, SURFACES, SURFACE_FIT, bearing, cycleProfile, destPoint, fetchCycleRoute, haversine, pointAt, surfaceStats } from "./route.js";
+
 // --- Opening hours ---------------------------------------------------------------
 
 // Is a place open at `date`, from an OpenStreetMap opening_hours value? true / false / null (can't tell).
@@ -350,3 +352,5 @@ async function addCafeStop(option, bike, opts, dep) {
   if (unsuitable(route) > unsuitable(option.route) + 100) return { ...base, cafe: null, cafeRejected: pick.cafe.name };
   return { ...base, route, waypoints: wps, cafe: { ...pick.cafe, open: pick.open, frac: pick.frac } };
 }
+
+export { openAt, searchCafes, isChain, cafesOnRoute, routeBounds, insertStop, loopWaypoints, findSpurs, overlapPct, scoreLoop, planLoop, addCafeStop };

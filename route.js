@@ -1,6 +1,8 @@
 // Safe2Ride route planning: place search, routing, and weather along the route at
 // the time you'd reach each point. No DOM access here so it can be tested on its own.
 
+import { PAST_HOURS, WEATHER_VARS, range } from "./logic.js";
+
 const ROUTE_PROFILE = { bicycle: "routed-bike", motorbike: "routed-car" };
 const MILE = 1609.344;
 const UK_CENTRE = [52.5, -1.5];
@@ -123,7 +125,7 @@ async function fetchCycleRoute(waypoints, profile, alt = 0) {
   return parseBRouter(await brouter(waypoints, road.stock, alt), profile);
 }
 
-let routeCalls = 0;   // diagnostics: how many routing requests a plan made
+let routeCalls = 0;   // diagnostics: how many routing requests the page has made (logged after each plan)
 async function brouter(waypoints, profile, alt) {
   routeCalls++;
   const lonlats = waypoints.map((w) => `${w.lon.toFixed(6)},${w.lat.toFixed(6)}`).join("|");
@@ -227,3 +229,6 @@ function bearing(p, q) {
 function miles(m) { const v = m / MILE; return v < 10 ? v.toFixed(1) : Math.round(v); }
 function clock(ts) { return new Date(ts * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }); }
 function duration(s) { const m = Math.round(s / 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`; }
+
+export { MILE, UK_CENTRE, SURFACES, SURFACE, SURFACE_FIT, routeCalls, searchPlaces, fetchRoute, makeCheckpoints, pointAt, fetchElevation, climbStats,
+  fetchRouteWeather, forecastHoursFor, cycleProfile, fetchCycleRoute, classifyWay, surfaceStats, haversine, destPoint, bearing, miles, clock, duration };

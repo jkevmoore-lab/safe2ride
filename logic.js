@@ -11,7 +11,9 @@ const WMO = {
   82: "Violent showers", 85: "Snow showers", 86: "Snow showers", 95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with hail",
 };
 
-const WEATHER_VARS = "temperature_2m,apparent_temperature,dew_point_2m,precipitation,precipitation_probability,snowfall,weather_code,visibility,wind_speed_10m,wind_gusts_10m,wind_direction_10m,soil_temperature_0cm,is_day";
+// What we fetch from Open-Meteo and send to the API. Must match contract/v2.json (the tests check).
+const WEATHER_VARS = ["temperature_2m", "apparent_temperature", "dew_point_2m", "precipitation", "precipitation_probability", "snowfall",
+  "weather_code", "visibility", "wind_speed_10m", "wind_gusts_10m", "wind_direction_10m", "soil_temperature_0cm", "is_day"].join(",");
 
 async function fetchWeather(lat, lon) {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}`
@@ -49,8 +51,8 @@ function precipType(h, i) {
   return mm >= 0.1 ? "rain" : null;
 }
 
-function compass(deg) { return ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(deg / 22.5) % 16]; }
-
-function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+function compass(deg) { return Number.isFinite(deg) ? ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][Math.round(deg / 22.5) % 16] : "?"; }
 
 function range(a, b) { return Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i); }
+
+export { PAST_HOURS, FORECAST_HOURS, WMO, WEATHER_VARS, fetchWeather, fetchPlace, bestWindow, precipType, compass, range };
